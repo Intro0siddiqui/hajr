@@ -84,8 +84,8 @@ pub const RingRouter = struct {
                 // 1. Trigger Tier 0 Observer to kill SpiderMonkey thread
                 self.tier0.killSpiderMonkeyThread(ring.sandbox_id);
                 
-                // 2. munmap the SandboxMemory block completely (no graceful degradation)
-                posix.munmap(ring.memory_base[0..ring.memory_size]);
+                // 2. Free the SandboxMemory block completely (no graceful degradation)
+                std.heap.page_allocator.free(ring.memory_base[0..ring.memory_size]);
                 
                 // 3. Rotate a fresh sandbox instance
                 self.tier0.rotateSandbox(ring.sandbox_id);

@@ -6,20 +6,25 @@ pub fn build(b: *Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // Main library
-    const lib = b.addStaticLibrary(.{
+    const lib = b.addLibrary(.{
         .name = "hajr",
-        .root_source_file = b.path("src/core/sandbox.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/core/sandbox.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .linkage = .static,
     });
 
     b.installArtifact(lib);
 
     // Build tests
     const tests = b.addTest(.{
-        .root_source_file = b.path("src/core/sandbox.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/core/sandbox.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     const test_step = b.step("test", "Run all tests");

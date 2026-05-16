@@ -30,23 +30,16 @@ pub const SandboxMemory = struct {
     size: usize,
     layout: ArenaLayout,
 
-    /// Allocate deterministic memory layout mapped by std.posix.mmap
+    /// Allocate deterministic memory layout mapped by OS-agnostic page allocator
     pub fn create(layout: ArenaLayout) !*SandboxMemory {
         const total_size = layout.totalSize();
-        
-        // Use std.posix.mmap to map the single contiguous block
-        const mapped = try posix.mmap(
-            null,
-            total_size,
-            posix.PROT.READ | posix.PROT.WRITE,
-            .{ .type = .anonymous, .shared = false },
-            -1,
-            0,
-        );
+
+        // Use OS-agnostic page allocator to map the single contiguous block directly
+        const mapped = try std.heap.page_allocator.alignedAlloc(u8, std.mem.Alignment.fromByteUnits(PAGE_SIZE), total_size);
 
         const arena = try std.heap.page_allocator.create(SandboxMemory);
         arena.* = SandboxMemory{
-            .base = @ptrCast(mapped.ptr),
+            .base = @alignCast(mapped.ptr),
             .size = total_size,
             .layout = layout,
         };
@@ -55,7 +48,8 @@ pub const SandboxMemory = struct {
     }
 
     pub fn destroy(self: *SandboxMemory) void {
-        posix.munmap(self.base[0..self.size]);
+        const slice = self.base[0..self.size];
+        std.heap.page_allocator.free(slice);
         std.heap.page_allocator.destroy(self);
     }
 

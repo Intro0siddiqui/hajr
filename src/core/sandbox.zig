@@ -151,15 +151,15 @@ const RingMetadata = extern struct {
     /// Write index from producer
     write_index: u64,
     /// Padding to avoid false sharing
-    _pad1: [56]u8,
+    _pad1: [56]u8 = undefined,
     /// Read index from consumer
     read_index: u64,
     /// Padding
-    _pad2: [56]u8,
+    _pad2: [56]u8 = undefined,
     /// Sequence number for validation
     sequence: u64,
     /// Padding
-    _pad3: [56]u8,
+    _pad3: [56]u8 = undefined,
 };
 
 /// Hardened ring buffer for IPC between sandbox tiers
@@ -203,17 +203,18 @@ pub const HardenedRingBuffer = struct {
         const total_size = RingConfig.METADATA_SIZE + actual_size;
         
         // Create anonymous memory mapping
-        const prot: c_int = switch (tier) {
-            .trusted => posix.PROT.READ | posix.PROT.WRITE,
-            .untrusted => posix.PROT.READ | posix.PROT.WRITE,
-            .isolated => posix.PROT.READ,
+        const prot: posix.PROT = switch (tier) {
+            .trusted => posix.PROT{ .READ = true, .WRITE = true },
+            .untrusted => posix.PROT{ .READ = true, .WRITE = true },
+            .isolated => posix.PROT{ .READ = true },
+            .root => posix.PROT{ .READ = true, .WRITE = true },
         };
         
         const fd = try posix.mmap(
             null,
             total_size,
             prot,
-            .{ .type = .anonymous, .shared = false },
+            .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
             -1,
             0,
         );
@@ -259,10 +260,11 @@ pub const HardenedRingBuffer = struct {
         try posix.ftruncate(fd, @intCast(total_size));
         
         // Memory map the file
-        const prot: c_int = switch (tier) {
-            .trusted => posix.PROT.READ | posix.PROT.WRITE,
-            .untrusted => posix.PROT.READ | posix.PROT.WRITE,
-            .isolated => posix.PROT.READ,
+        const prot: posix.PROT = switch (tier) {
+            .trusted => posix.PROT{ .READ = true, .WRITE = true },
+            .untrusted => posix.PROT{ .READ = true, .WRITE = true },
+            .isolated => posix.PROT{ .READ = true },
+            .root => posix.PROT{ .READ = true, .WRITE = true },
         };
         
         const mapped = try posix.mmap(
@@ -300,9 +302,9 @@ pub const HardenedRingBuffer = struct {
         
         // Calculate available space with wrap-around
         const used = if (write_idx >= read_idx) write_idx - read_idx else 0;
-        const available = ring.size - used;
+        const avail = ring.size - used;
         
-        if (data.len > available) {
+        if (data.len > avail) {
             return error.RingFull;
         }
         
@@ -335,8 +337,8 @@ pub const HardenedRingBuffer = struct {
         const read_idx = meta.read_index;
         
         // Check for available data
-        const available = if (write_idx >= read_idx) write_idx - read_idx else 0;
-        if (available == 0) {
+        const avail = if (write_idx >= read_idx) write_idx - read_idx else 0;
+        if (avail == 0) {
             return 0;
         }
         
@@ -478,9 +480,9 @@ pub const SandboxContext = struct {
             .id = id,
             .tier = tier,
             .protection_key = .{ .value = key_value, .tier = @intFromEnum(tier) },
-            .arenas = std.ArrayList(Arena).init(std.heap.page_allocator),
-            .rings_in = std.ArrayList(*HardenedRingBuffer).init(std.heap.page_allocator),
-            .rings_out = std.ArrayList(*HardenedRingBuffer).init(std.heap.page_allocator),
+            .arenas = .empty,
+            .rings_in = .empty,
+            .rings_out = .empty,
             .thread = null,
             .state = .created,
         };
@@ -489,15 +491,15 @@ pub const SandboxContext = struct {
     /// Allocate a protected memory arena for this sandbox
     pub fn allocateArena(ctx: *SandboxContext, size: usize) !*Arena {
         const arena = try Arena.create(size, ctx.protection_key);
-        try ctx.arenas.append(arena);
+        try ctx.arenas.append(std.heap.page_allocator, arena);
         return &ctx.arenas.items[ctx.arenas.items.len - 1];
     }
     
     /// Add an IPC ring to this sandbox
     pub fn addRing(ctx: *SandboxContext, ring: *HardenedRingBuffer, direction: enum { inbound, outbound }) !void {
         switch (direction) {
-            .inbound => try ctx.rings_in.append(ring),
-            .outbound => try ctx.rings_out.append(ring),
+            .inbound => try ctx.rings_in.append(std.heap.page_allocator, ring),
+            .outbound => try ctx.rings_out.append(std.heap.page_allocator, ring),
         }
     }
     
@@ -544,8 +546,8 @@ pub const Arena = struct {
         const memory = try posix.mmap(
             null,
             size,
-            posix.PROT.READ | posix.PROT.WRITE,
-            .{ .type = .anonymous, .shared = false },
+            posix.PROT{ .READ = true, .WRITE = true },
+            .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
             -1,
             0,
         );
@@ -560,9 +562,11 @@ pub const Arena = struct {
     /// Apply hardware protection to this arena
     pub fn protect(arena: *Arena, permission: AccessPermission) !void {
         // On systems without MPK/MTE, we just set normal memory protection
-        const prot: c_int = if (permission.read) posix.PROT.READ else 0 |
-            if (permission.write) posix.PROT.WRITE else 0 |
-            if (permission.execute) posix.PROT.EXEC else 0;
+        const prot: u32 = @bitCast(posix.PROT{
+            .READ = permission.read,
+            .WRITE = permission.write,
+            .EXEC = permission.execute,
+        });
         
         // Apply memory protection (this would use pkey_mprotect on MPK systems)
         try posix.mprotect(arena.memory, prot);
@@ -589,7 +593,7 @@ pub const MessageType = enum(u32) {
     /// Response to query
     response = 3,
     /// Error occurred
-    error = 4,
+    @"error" = 4,
     /// Shutdown sandbox
     shutdown = 5,
     /// Heartbeat/keepalive
@@ -617,14 +621,14 @@ pub const MessageHeader = extern struct {
 /// Message with header and payload
 pub const Message = struct {
     header: MessageHeader,
-    payload: []u8,
+    payload: []const u8,
     
     /// Create a new message
     pub fn create(
         msg_type: MessageType,
         source_id: u64,
         target_id: u64,
-        payload: []u8,
+        payload: []const u8,
         sequence: u64,
     ) Message {
         const timestamp = @as(u64, @intCast(std.time.nanoTimestamp()));
@@ -704,7 +708,7 @@ pub const SandboxManager = struct {
     pub fn init(config: Config) !SandboxManager {
         return SandboxManager{
             .sandboxes = std.AutoHashMap(u64, *SandboxContext).init(std.heap.page_allocator),
-            .rings = std.ArrayList(HardenedRingBuffer).init(std.heap.page_allocator),
+            .rings = .empty,
             .key_manager = MPKManager.init(),
             .sequence = 0,
             .config = config,
@@ -753,7 +757,7 @@ pub const SandboxManager = struct {
             target_tier,
         );
         
-        try manager.rings.append(ring);
+        try manager.rings.append(std.heap.page_allocator, ring);
         
         return &manager.rings.items[manager.rings.items.len - 1];
     }
@@ -838,10 +842,13 @@ pub const MPK = struct {
         pub fn disableAccess(key: u32) void {
             if (builtin.cpu.arch == .x86_64) {
                 // ECX = 0 (disable access), EDX:EAX = 0 (all threads)
-                asm volatile ("movl $0, %%eax\nmovl $0, %%edx\nmovl %0, %%ecx\nwrpkru"
-                    : 
-                    : "r" (key)
-                    : "eax", "ecx", "edx", "memory"
+                asm volatile (
+                    \\movl $0, %%eax
+                    \\movl $0, %%edx
+                    \\movl %[k], %%ecx
+                    :
+                    : [k] "r" (key),
+                    : .{ .eax = true, .ecx = true, .edx = true, .memory = true }
                 );
             }
         }
@@ -850,10 +857,14 @@ pub const MPK = struct {
         pub fn enableReadOnly(key: u32) void {
             if (builtin.cpu.arch == .x86_64) {
                 // ECX = 0, EDX:EAX = 0, but with read-only flag
-                asm volatile ("movl $0, %%eax\nmovl $0, %%edx\nmovl %0, %%ecx\nwrpkru"
+                const read_disable_flag: u32 = @as(u32, 1) << @as(u5, @intCast(key * 2));
+                asm volatile (
+                    \\movl $0, %%eax
+                    \\movl $0, %%edx
+                    \\movl %[k], %%ecx
                     :
-                    : "r" (@as(u32, 1) << (key * 2)) // Read-disable flag
-                    : "eax", "ecx", "edx", "memory"
+                    : [k] "r" (read_disable_flag),
+                    : .{ .eax = true, .ecx = true, .edx = true, .memory = true }
                 );
             }
         }
@@ -862,10 +873,13 @@ pub const MPK = struct {
         pub fn enableFullAccess(key: u32) void {
             if (builtin.cpu.arch == .x86_64) {
                 // ECX = key, EDX:EAX = 0 (allow all rights)
-                asm volatile ("xorl %%eax, %%eax\nxorl %%edx, %%edx\nmovl %0, %%ecx\nwrpkru"
+                asm volatile (
+                    \\xorl %%eax, %%eax
+                    \\xorl %%edx, %%edx
+                    \\movl %[k], %%ecx
                     :
-                    : "r" (key)
-                    : "eax", "ecx", "edx", "memory"
+                    : [k] "r" (key),
+                    : .{ .eax = true, .ecx = true, .edx = true, .memory = true }
                 );
             }
         }
@@ -873,10 +887,13 @@ pub const MPK = struct {
         /// Reset all keys to default state
         pub fn resetAll() void {
             if (builtin.cpu.arch == .x86_64) {
-                asm volatile ("xorl %%eax, %%eax\nxorl %%edx, %%edx\nxorl %%ecx, %%ecx\nwrpkru"
+                asm volatile (
+                    \\xorl %%eax, %%eax
+                    \\xorl %%edx, %%edx
+                    \\xorl %%ecx, %%ecx
                     :
                     :
-                    : "eax", "ecx", "edx", "memory"
+                    : .{ .eax = true, .ecx = true, .edx = true, .memory = true }
                 );
             }
         }
@@ -980,7 +997,7 @@ test "SandboxManager create and manage sandboxes" {
 
 test "Message serialization" {
     const payload = "Test payload";
-    const msg = Message.create(.execute, 1, 2, payload, 42);
+    const msg = Message.create(.execute, 1, 2, payload[0..payload.len], 42);
     
     var buf: [1024]u8 = undefined;
     try msg.serialize(&buf);
