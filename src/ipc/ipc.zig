@@ -188,7 +188,7 @@ pub const IpcRing = struct {
             .sequence = ring.sequence.fetchAdd(1, .acq_rel),
             .source_id = source_id,
             .target_id = target_id,
-            .timestamp = @as(u64, @intCast(std.time.nanoTimestamp())),
+            .timestamp = @as(u64, @intCast(@max(0, std.time.nanoTimestamp()))),
             .checksum = 0, // Would calculate CRC32
             .reserved = 0,
         };
