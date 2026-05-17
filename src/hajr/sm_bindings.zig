@@ -1,20 +1,12 @@
 const std = @import("std");
 const atomic = std.atomic;
+const sandbox = @import("../core/sandbox.zig");
 
 // ============================================================================
 // SpiderMonkey Zero-Copy FFI Bindings (Task 2)
 // ============================================================================
 
-pub const RingMetadata = extern struct {
-    write_index: atomic.Value(u64),
-    _pad1: [56]u8,
-    read_index: atomic.Value(u64),
-    _pad2: [56]u8,
-    sequence: atomic.Value(u64),
-    _pad3: [48]u8,
-    poison_bit: atomic.Value(bool),
-    _reserved: [7]u8,
-};
+pub const RingMetadata = sandbox.RingMetadata;
 
 /// SpiderMonkey External ArrayBuffer representation
 pub const SMExternalBuffer = extern struct {
@@ -27,10 +19,10 @@ pub const SMExternalBuffer = extern struct {
 pub const FFIConfig = extern struct {
     inbound_base: [*]u8,
     inbound_size: usize,
-    inbound_meta: *RingMetadata,
+    inbound_meta: *sandbox.RingMetadata,
     outbound_base: [*]u8,
     outbound_size: usize,
-    outbound_meta: *RingMetadata,
+    outbound_meta: *sandbox.RingMetadata,
 };
 
 var g_ffi_config: ?*const FFIConfig = null;

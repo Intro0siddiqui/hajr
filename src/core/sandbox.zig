@@ -147,19 +147,23 @@ pub const RingConfig = struct {
 };
 
 /// Ring buffer metadata (cache-line aligned)
-const RingMetadata = extern struct {
+pub const RingMetadata = extern struct {
     /// Write index from producer
-    write_index: u64,
+    write_index: std.atomic.Value(u64),
     /// Padding to avoid false sharing
-    _pad1: [56]u8 = undefined,
+    _pad1: [56]u8 = [1]u8{0} ** 56,
     /// Read index from consumer
-    read_index: u64,
+    read_index: std.atomic.Value(u64),
     /// Padding
-    _pad2: [56]u8 = undefined,
+    _pad2: [56]u8 = [1]u8{0} ** 56,
     /// Sequence number for validation
-    sequence: u64,
-    /// Padding
-    _pad3: [56]u8 = undefined,
+    sequence: std.atomic.Value(u64),
+    /// Poison bit (set atomically on fault)
+    poison_bit: std.atomic.Value(bool),
+    /// Poison cause
+    poison_cause: std.atomic.Value(u32),
+    /// Padding to fill 64 bytes (8 + 1 + 4 + 51 = 64)
+    _pad3: [51]u8 = [1]u8{0} ** 51,
 };
 
 /// Hardened ring buffer for IPC between sandbox tiers
@@ -297,8 +301,8 @@ pub const HardenedRingBuffer = struct {
     /// Write data to the ring (producer side)
     pub fn write(ring: *HardenedRingBuffer, data: []const u8) !void {
         const meta = ring.metadata;
-        const write_idx = meta.write_index;
-        const read_idx = meta.read_index;
+        const write_idx = meta.write_index.load(.acquire);
+        const read_idx = meta.read_index.load(.acquire);
         
         // Calculate available space with wrap-around
         const used = if (write_idx >= read_idx) write_idx - read_idx else 0;
@@ -324,17 +328,17 @@ pub const HardenedRingBuffer = struct {
         std.atomic.fence(.release);
         
         // Update write index atomically
-        meta.write_index = write_idx + @as(u64, @intCast(data.len));
+        meta.write_index.store(write_idx + @as(u64, @intCast(data.len)), .release);
         
         // Increment sequence for validation
-        _ = @atomicRmw(u64, &meta.sequence, .Add, 1, .acq_rel);
+        _ = meta.sequence.fetchAdd(1, .acq_rel);
     }
     
     /// Read data from the ring (consumer side)
     pub fn read(ring: *HardenedRingBuffer, buf: []u8) !usize {
         const meta = ring.metadata;
-        const write_idx = meta.write_index;
-        const read_idx = meta.read_index;
+        const write_idx = meta.write_index.load(.acquire);
+        const read_idx = meta.read_index.load(.acquire);
         
         // Check for available data
         const avail = if (write_idx >= read_idx) write_idx - read_idx else 0;
@@ -343,7 +347,7 @@ pub const HardenedRingBuffer = struct {
         }
         
         // Limit read to buffer size
-        const to_read = @min(@as(usize, @intCast(available)), buf.len);
+        const to_read = @min(@as(usize, @intCast(avail)), buf.len);
         
         // Read with wrap-around handling
         const read_pos = @as(usize, @intCast(read_idx)) & (ring.size - 1);
@@ -361,21 +365,21 @@ pub const HardenedRingBuffer = struct {
         std.atomic.fence(.release);
         
         // Update read index atomically
-        meta.read_index = read_idx + @as(u64, @intCast(to_read));
+        meta.read_index.store(read_idx + @as(u64, @intCast(to_read)), .release);
         
         return to_read;
     }
     
     /// Get current available bytes for reading
     pub fn available(ring: *const HardenedRingBuffer) usize {
-        const write_idx = ring.metadata.write_index;
-        const read_idx = ring.metadata.read_index;
+        const write_idx = ring.metadata.write_index.load(.acquire);
+        const read_idx = ring.metadata.read_index.load(.acquire);
         return if (write_idx >= read_idx) @as(usize, @intCast(write_idx - read_idx)) else 0;
     }
     
     /// Validate sequence integrity
     pub fn validateSequence(ring: *const HardenedRingBuffer, expected: u64) bool {
-        return ring.metadata.sequence >= expected;
+        return ring.metadata.sequence.load(.acquire) >= expected;
     }
     
     /// Destroy the ring buffer and release resources
@@ -451,8 +455,8 @@ pub const SandboxContext = struct {
     /// Hardware protection key
     protection_key: HardwareProtection.Key,
     
-    /// Memory arenas allocated to this sandbox
-    arenas: std.ArrayList(Arena),
+    /// Memory arenas allocated to this sandbox (pointers to avoid invalidation)
+    arenas: std.ArrayList(*Arena),
     
     /// Ring buffers for IPC
     rings_in: std.ArrayList(*HardenedRingBuffer),
@@ -461,6 +465,9 @@ pub const SandboxContext = struct {
     /// Thread handle (if using threads)
     thread: ?std.Thread,
     
+    /// Allocator used for internal lists
+    allocator: std.mem.Allocator,
+
     /// Sandbox state
     state: State,
     
@@ -473,33 +480,35 @@ pub const SandboxContext = struct {
         terminated,
     };
     
-    pub fn init(tier: SandboxTier, id: u64) !SandboxContext {
+    pub fn init(allocator: std.mem.Allocator, tier: SandboxTier, id: u64) !SandboxContext {
         const key_value = tier.getProtectionKey();
         
         return SandboxContext{
             .id = id,
             .tier = tier,
             .protection_key = .{ .value = key_value, .tier = @intFromEnum(tier) },
-            .arenas = .empty,
-            .rings_in = .empty,
-            .rings_out = .empty,
+            .arenas = std.ArrayList(*Arena).init(allocator),
+            .rings_in = std.ArrayList(*HardenedRingBuffer).init(allocator),
+            .rings_out = std.ArrayList(*HardenedRingBuffer).init(allocator),
             .thread = null,
+            .allocator = allocator,
             .state = .created,
         };
     }
     
     /// Allocate a protected memory arena for this sandbox
     pub fn allocateArena(ctx: *SandboxContext, size: usize) !*Arena {
-        const arena = try Arena.create(size, ctx.protection_key);
-        try ctx.arenas.append(std.heap.page_allocator, arena);
-        return &ctx.arenas.items[ctx.arenas.items.len - 1];
+        const arena = try ctx.allocator.create(Arena);
+        arena.* = try Arena.create(size, ctx.protection_key);
+        try ctx.arenas.append(arena);
+        return arena;
     }
     
     /// Add an IPC ring to this sandbox
     pub fn addRing(ctx: *SandboxContext, ring: *HardenedRingBuffer, direction: enum { inbound, outbound }) !void {
         switch (direction) {
-            .inbound => try ctx.rings_in.append(std.heap.page_allocator, ring),
-            .outbound => try ctx.rings_out.append(std.heap.page_allocator, ring),
+            .inbound => try ctx.rings_in.append(ring),
+            .outbound => try ctx.rings_out.append(ring),
         }
     }
     
@@ -518,8 +527,9 @@ pub const SandboxContext = struct {
         ctx.state = .terminated;
         
         // Clean up arenas
-        for (&ctx.arenas) |*arena| {
+        for (ctx.arenas.items) |arena| {
             arena.destroy();
+            ctx.allocator.destroy(arena);
         }
         ctx.arenas.deinit();
         
@@ -631,7 +641,12 @@ pub const Message = struct {
         payload: []const u8,
         sequence: u64,
     ) Message {
-        const timestamp = @as(u64, @intCast(std.time.nanoTimestamp()));
+        // In Zig 0.16, we use std.posix.clock_gettime for high-precision ns
+        var ts: std.posix.timespec = undefined;
+        std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts) catch {
+            ts = .{ .tv_sec = 0, .tv_nsec = 0 };
+        };
+        const timestamp = @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
         const length = @as(u32, @intCast(@sizeOf(MessageHeader) + payload.len));
         
         return Message{
@@ -685,14 +700,17 @@ pub const SandboxManager = struct {
     /// All managed sandboxes
     sandboxes: std.AutoHashMap(u64, *SandboxContext),
     
-    /// Ring buffer pool for IPC
-    rings: std.ArrayList(HardenedRingBuffer),
+    /// Ring buffer pool for IPC (pointers to avoid invalidation)
+    rings: std.ArrayList(*HardenedRingBuffer),
     
     /// Hardware protection key manager
     key_manager: MPKManager,
     
     /// Global sequence counter
     sequence: u64,
+
+    /// Allocator
+    allocator: std.mem.Allocator,
     
     /// Configuration
     config: Config,
@@ -705,12 +723,13 @@ pub const SandboxManager = struct {
         crash_recovery_enabled: bool = true,
     };
     
-    pub fn init(config: Config) !SandboxManager {
+    pub fn init(allocator: std.mem.Allocator, config: Config) !SandboxManager {
         return SandboxManager{
-            .sandboxes = std.AutoHashMap(u64, *SandboxContext).init(std.heap.page_allocator),
-            .rings = .empty,
+            .sandboxes = std.AutoHashMap(u64, *SandboxContext).init(allocator),
+            .rings = std.ArrayList(*HardenedRingBuffer).init(allocator),
             .key_manager = MPKManager.init(),
             .sequence = 0,
+            .allocator = allocator,
             .config = config,
         };
     }
@@ -724,8 +743,8 @@ pub const SandboxManager = struct {
         const id = manager.sequence;
         manager.sequence += 1;
         
-        var ctx = try std.heap.page_allocator.create(SandboxContext);
-        ctx.* = try SandboxContext.init(tier, id);
+        var ctx = try manager.allocator.create(SandboxContext);
+        ctx.* = try SandboxContext.init(manager.allocator, tier, id);
         
         // Create IPC rings for this sandbox
         const ring_in = try manager.createRing(tier, .trusted, .inbound);
@@ -751,15 +770,16 @@ pub const SandboxManager = struct {
         else
             source_tier.getProtectionKey();
         
-        const ring = try HardenedRingBuffer.create(
+        const ring = try manager.allocator.create(HardenedRingBuffer);
+        ring.* = try HardenedRingBuffer.create(
             manager.config.ring_buffer_size,
             .{ .value = key, .tier = @intFromEnum(target_tier) },
             target_tier,
         );
         
-        try manager.rings.append(std.heap.page_allocator, ring);
+        try manager.rings.append(ring);
         
-        return &manager.rings.items[manager.rings.items.len - 1];
+        return ring;
     }
     
     /// Send a message to a sandbox
@@ -816,12 +836,13 @@ pub const SandboxManager = struct {
         var it = manager.sandboxes.iterator();
         while (it.next()) |entry| {
             entry.value_ptr.*.terminate();
-            std.heap.page_allocator.destroy(entry.value_ptr.*);
+            manager.allocator.destroy(entry.value_ptr.*);
         }
         manager.sandboxes.deinit();
         
-        for (&manager.rings) |*ring| {
+        for (manager.rings.items) |ring| {
             ring.destroy();
+            manager.allocator.destroy(ring);
         }
         manager.rings.deinit();
     }
@@ -966,7 +987,9 @@ pub const CAbiBridge = struct {
 test "HardenedRingBuffer creation and basic operations" {
     const key = HardwareProtection.Key{ .value = 1, .tier = 1 };
     var ring = try HardenedRingBuffer.create(1024, key, .trusted);
-    defer ring.destroy();
+    defer {
+        ring.destroy();
+    }
     
     // Test write
     const data = "Hello, World!";
@@ -980,7 +1003,7 @@ test "HardenedRingBuffer creation and basic operations" {
 }
 
 test "SandboxManager create and manage sandboxes" {
-    var manager = try SandboxManager.init(.{
+    var manager = try SandboxManager.init(std.testing.allocator, .{
         .max_sandboxes = 4,
         .ring_buffer_size = 1024,
     });

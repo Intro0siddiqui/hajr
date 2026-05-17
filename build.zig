@@ -21,7 +21,7 @@ pub fn build(b: *Build) void {
     // Build tests
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/core/sandbox.zig"),
+            .root_source_file = b.path("src/hajr/phase2.zig"),
             .target = target,
             .optimize = optimize,
         }),
