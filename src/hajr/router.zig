@@ -1,21 +1,13 @@
 const std = @import("std");
 const posix = std.posix;
 const atomic = std.atomic;
+const sandbox = @import("../core/sandbox.zig");
 
 // ============================================================================
 // Tier 1 Event Router & Poison Protocol (Tasks 3 & 4)
 // ============================================================================
 
-pub const RingMetadata = extern struct {
-    write_index: atomic.Value(u64),
-    _pad1: [56]u8,
-    read_index: atomic.Value(u64),
-    _pad2: [56]u8,
-    sequence: atomic.Value(u64),
-    _pad3: [48]u8,
-    poison_bit: atomic.Value(bool),
-    _reserved: [7]u8,
-};
+pub const RingMetadata = sandbox.RingMetadata;
 
 pub const RequestType = enum(u32) {
     invalid = 0,
@@ -46,7 +38,7 @@ pub const ActiveRing = struct {
     sandbox_id: u64,
     outbound_base: [*]u8,
     outbound_size: usize,
-    outbound_meta: *RingMetadata,
+    outbound_meta: *sandbox.RingMetadata,
     memory_base: [*]align(4096) u8,
     memory_size: usize,
     active: bool,
@@ -99,6 +91,9 @@ pub const RingRouter = struct {
             const write_idx = meta.write_index.load(.acquire);
 
             if (write_idx > read_idx) {
+                // Check if poisoned (fail-fast again inside loop for high precision)
+                if (meta.poison_bit.load(.acquire)) continue;
+
                 const read_pos = read_idx & (ring.outbound_size - 1);
                 
                 // Read Request Header

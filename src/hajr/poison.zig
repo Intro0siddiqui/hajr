@@ -8,6 +8,7 @@ const std = @import("std");
 const posix = std.posix;
 const atomic = std.atomic;
 const builtin = @import("builtin");
+const sandbox = @import("../core/sandbox.zig");
 
 // ============================================================================
 // Poison Types and Constants
@@ -67,26 +68,7 @@ pub const RingFlags = struct {
 // ============================================================================
 
 /// Extended ring metadata including poison protocol fields
-pub const PoisonableRingMetadata = extern struct {
-    /// Write index from producer
-    write_index: atomic(u64),
-    /// Padding to prevent false sharing
-    _pad1: [56]u8,
-    /// Read index from consumer
-    read_index: atomic(u64),
-    /// Padding
-    _pad2: [56]u8,
-    /// Sequence number for validation
-    sequence: u64,
-    /// Padding
-    _pad3: [48]u8,
-    /// Poison bit (set atomically on fault)
-    poison_bit: atomic(bool),
-    /// Poison cause
-    poison_cause: atomic(u32),
-    /// Reserved
-    _reserved: [4]u8,
-};
+pub const PoisonableRingMetadata = sandbox.RingMetadata;
 
 /// Poison the ring with cause
 pub fn poisonRing(ring: *volatile PoisonableRingMetadata, cause: PoisonCause) void {
@@ -184,10 +166,10 @@ pub const Tier0Observer = struct {
             if (ring.isPoisoned()) {
                 // Record the poison event
                 const record = PoisonRecord{
-                    .timestamp_ns = @as(u64, @intCast(std.time.nanoTimestamp())),
+                    .timestamp_ns = @as(u64, @intCast(std.time.milliTimestamp())) * 1_000_000,
                     .sandbox_id = ring.sandbox_id,
-                    .cause = ring.getPoisonCause(),
-                    .sequence_at_fault = ring.metadata.sequence,
+                    .cause = @intFromEnum(ring.getPoisonCause()),
+                    .sequence_at_fault = ring.metadata.sequence.load(.acquire),
                     .expected_sequence = ring.expected_sequence,
                     .context = undefined,
                 };
