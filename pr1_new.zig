@@ -158,12 +158,17 @@ pub const RingMetadata = extern struct {
     _pad2: [56]u8 = [1]u8{0} ** 56,
     /// Sequence number for validation
     sequence: std.atomic.Value(u64),
+<<<<<<< HEAD
     /// Poison bit (set atomically on fault)
     poison_bit: std.atomic.Value(bool),
     /// Poison cause
     poison_cause: std.atomic.Value(u32),
     /// Padding to fill 64 bytes (8 + 1 + 4 + 51 = 64)
     _pad3: [51]u8 = [1]u8{0} ** 51,
+=======
+    /// Padding
+    _pad3: [56]u8 = undefined,
+>>>>>>> 09068d2 (Fix HardenedRingBuffer wrapping logic and upgrade to Zig 0.16.0)
 };
 
 /// Hardened ring buffer for IPC between sandbox tiers
@@ -207,11 +212,11 @@ pub const HardenedRingBuffer = struct {
         const total_size = RingConfig.METADATA_SIZE + actual_size;
         
         // Create anonymous memory mapping
-        const prot: posix.PROT = switch (tier) {
-            .trusted => .{ .READ = true, .WRITE = true },
-            .untrusted => .{ .READ = true, .WRITE = true },
-            .isolated => .{ .READ = true },
-            .root => .{ .READ = true, .WRITE = true },
+        const prot: u32 = switch (tier) {
+            .trusted => posix.PROT.READ | posix.PROT.WRITE,
+            .untrusted => posix.PROT.READ | posix.PROT.WRITE,
+            .isolated => posix.PROT.READ,
+            .root => posix.PROT.READ | posix.PROT.WRITE,
         };
         
         const fd = try posix.mmap(
@@ -228,8 +233,6 @@ pub const HardenedRingBuffer = struct {
         metadata.write_index.store(0, .release);
         metadata.read_index.store(0, .release);
         metadata.sequence.store(0, .release);
-        metadata.poison_bit.store(false, .release);
-        metadata.poison_cause.store(0, .release);
         
         return HardenedRingBuffer{
             .memory = fd,
@@ -253,30 +256,29 @@ pub const HardenedRingBuffer = struct {
         const total_size = RingConfig.METADATA_SIZE + actual_size;
         
         // Open or create file
-        const fd = try posix.openat(
-            posix.AT.FDCWD,
+        const fd = try posix.open(
             path,
-            .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true },
+            .{ .mode = .read_write, .create = true, .truncate = true },
             0o600,
         );
-        defer _ = posix.system.close(fd);
+        defer posix.close(fd);
         
         // Extend file to required size
         try posix.ftruncate(fd, @intCast(total_size));
         
         // Memory map the file
-        const prot: posix.PROT = switch (tier) {
-            .trusted => .{ .READ = true, .WRITE = true },
-            .untrusted => .{ .READ = true, .WRITE = true },
-            .isolated => .{ .READ = true },
-            .root => .{ .READ = true, .WRITE = true },
+        const prot: u32 = switch (tier) {
+            .trusted => posix.PROT.READ | posix.PROT.WRITE,
+            .untrusted => posix.PROT.READ | posix.PROT.WRITE,
+            .isolated => posix.PROT.READ,
+            .root => posix.PROT.READ | posix.PROT.WRITE,
         };
         
         const mapped = try posix.mmap(
             null,
             total_size,
             prot,
-            .{ .TYPE = .SHARED },
+            .{ .type = .file, .shared = true },
             fd,
             0,
         );
@@ -285,8 +287,6 @@ pub const HardenedRingBuffer = struct {
         metadata.write_index.store(0, .release);
         metadata.read_index.store(0, .release);
         metadata.sequence.store(0, .release);
-        metadata.poison_bit.store(false, .release);
-        metadata.poison_cause.store(0, .release);
         
         return HardenedRingBuffer{
             .memory = mapped,
@@ -325,8 +325,15 @@ pub const HardenedRingBuffer = struct {
             @memcpy(ring.data[0..data.len - first_len], data[first_len..]);
         }
         
-        // Update write index atomically with wrapping addition
+        // Memory barrier before updating index
+        // No explicit fence, using .acq_rel on sequence
+        
+        // Update write index atomically
+<<<<<<< HEAD
+        meta.write_index.store(write_idx + @as(u64, @intCast(data.len)), .release);
+=======
         meta.write_index.store(write_idx +% @as(u64, @intCast(data.len)), .release);
+>>>>>>> 09068d2 (Fix HardenedRingBuffer wrapping logic and upgrade to Zig 0.16.0)
         
         // Increment sequence for validation
         _ = meta.sequence.fetchAdd(1, .acq_rel);
@@ -338,7 +345,7 @@ pub const HardenedRingBuffer = struct {
         const write_idx = meta.write_index.load(.acquire);
         const read_idx = meta.read_index.load(.acquire);
         
-        // Check for available data with wrapping subtraction
+        // Check for available data
         const avail = write_idx -% read_idx;
         if (avail == 0) {
             return 0;
@@ -359,8 +366,15 @@ pub const HardenedRingBuffer = struct {
             @memcpy(buf[first_len..to_read], ring.data[0..to_read - first_len]);
         }
         
-        // Update read index atomically with wrapping addition
+        // Memory barrier before updating index
+        // No explicit fence, sequence check handles ordering
+        
+        // Update read index atomically
+<<<<<<< HEAD
+        meta.read_index.store(read_idx + @as(u64, @intCast(to_read)), .release);
+=======
         meta.read_index.store(read_idx +% @as(u64, @intCast(to_read)), .release);
+>>>>>>> 09068d2 (Fix HardenedRingBuffer wrapping logic and upgrade to Zig 0.16.0)
         
         return to_read;
     }
@@ -369,7 +383,11 @@ pub const HardenedRingBuffer = struct {
     pub fn available(ring: *const HardenedRingBuffer) usize {
         const write_idx = ring.metadata.write_index.load(.acquire);
         const read_idx = ring.metadata.read_index.load(.acquire);
+<<<<<<< HEAD
+        return if (write_idx >= read_idx) @as(usize, @intCast(write_idx - read_idx)) else 0;
+=======
         return @as(usize, @intCast(write_idx -% read_idx));
+>>>>>>> 09068d2 (Fix HardenedRingBuffer wrapping logic and upgrade to Zig 0.16.0)
     }
     
     /// Validate sequence integrity
@@ -381,7 +399,7 @@ pub const HardenedRingBuffer = struct {
     pub fn destroy(ring: *HardenedRingBuffer) void {
         posix.munmap(ring.memory);
         if (ring.fd) |fd| {
-            _ = posix.system.close(fd);
+            posix.close(fd);
         }
     }
 };
@@ -451,11 +469,11 @@ pub const SandboxContext = struct {
     protection_key: HardwareProtection.Key,
     
     /// Memory arenas allocated to this sandbox (pointers to avoid invalidation)
-    arenas: std.ArrayListUnmanaged(*Arena),
+    arenas: std.ArrayList(*Arena),
     
     /// Ring buffers for IPC
-    rings_in: std.ArrayListUnmanaged(*HardenedRingBuffer),
-    rings_out: std.ArrayListUnmanaged(*HardenedRingBuffer),
+    rings_in: std.ArrayList(*HardenedRingBuffer),
+    rings_out: std.ArrayList(*HardenedRingBuffer),
     
     /// Thread handle (if using threads)
     thread: ?std.Thread,
@@ -482,9 +500,15 @@ pub const SandboxContext = struct {
             .id = id,
             .tier = tier,
             .protection_key = .{ .value = key_value, .tier = @intFromEnum(tier) },
-            .arenas = .empty,
-            .rings_in = .empty,
-            .rings_out = .empty,
+<<<<<<< HEAD
+            .arenas = std.ArrayList(*Arena).init(allocator),
+            .rings_in = std.ArrayList(*HardenedRingBuffer).init(allocator),
+            .rings_out = std.ArrayList(*HardenedRingBuffer).init(allocator),
+=======
+            .arenas = std.ArrayList(Arena).init(std.heap.page_allocator),
+            .rings_in = std.ArrayList(*HardenedRingBuffer).init(std.heap.page_allocator),
+            .rings_out = std.ArrayList(*HardenedRingBuffer).init(std.heap.page_allocator),
+>>>>>>> 09068d2 (Fix HardenedRingBuffer wrapping logic and upgrade to Zig 0.16.0)
             .thread = null,
             .allocator = allocator,
             .state = .created,
@@ -493,17 +517,23 @@ pub const SandboxContext = struct {
     
     /// Allocate a protected memory arena for this sandbox
     pub fn allocateArena(ctx: *SandboxContext, size: usize) !*Arena {
+<<<<<<< HEAD
         const arena = try ctx.allocator.create(Arena);
         arena.* = try Arena.create(size, ctx.protection_key);
-        try ctx.arenas.append(ctx.allocator, arena);
+        try ctx.arenas.append(arena);
         return arena;
+=======
+        const arena = try Arena.create(size, ctx.protection_key);
+        try ctx.arenas.append(arena);
+        return &ctx.arenas.items[ctx.arenas.items.len - 1];
+>>>>>>> 09068d2 (Fix HardenedRingBuffer wrapping logic and upgrade to Zig 0.16.0)
     }
     
     /// Add an IPC ring to this sandbox
     pub fn addRing(ctx: *SandboxContext, ring: *HardenedRingBuffer, direction: enum { inbound, outbound }) !void {
         switch (direction) {
-            .inbound => try ctx.rings_in.append(ctx.allocator, ring),
-            .outbound => try ctx.rings_out.append(ctx.allocator, ring),
+            .inbound => try ctx.rings_in.append(ring),
+            .outbound => try ctx.rings_out.append(ring),
         }
     }
     
@@ -522,15 +552,19 @@ pub const SandboxContext = struct {
         ctx.state = .terminated;
         
         // Clean up arenas
+<<<<<<< HEAD
         for (ctx.arenas.items) |arena| {
+=======
+        for (ctx.arenas.items) |*arena| {
+>>>>>>> 09068d2 (Fix HardenedRingBuffer wrapping logic and upgrade to Zig 0.16.0)
             arena.destroy();
             ctx.allocator.destroy(arena);
         }
-        ctx.arenas.deinit(ctx.allocator);
+        ctx.arenas.deinit();
         
         // Note: Rings are owned by the system, not the sandbox
-        ctx.rings_in.deinit(ctx.allocator);
-        ctx.rings_out.deinit(ctx.allocator);
+        ctx.rings_in.deinit();
+        ctx.rings_out.deinit();
         
         // Join thread if running
         if (ctx.thread) |thread| {
@@ -551,7 +585,7 @@ pub const Arena = struct {
         const memory = try posix.mmap(
             null,
             size,
-            .{ .READ = true, .WRITE = true },
+            posix.PROT.READ | posix.PROT.WRITE,
             .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
             -1,
             0,
@@ -567,10 +601,10 @@ pub const Arena = struct {
     /// Apply hardware protection to this arena
     pub fn protect(arena: *Arena, permission: AccessPermission) !void {
         // On systems without MPK/MTE, we just set normal memory protection
-        var prot: posix.PROT = .{};
-        if (permission.read) prot.READ = true;
-        if (permission.write) prot.WRITE = true;
-        if (permission.execute) prot.EXEC = true;
+        var prot: u32 = 0;
+        if (permission.read) prot |= posix.PROT.READ;
+        if (permission.write) prot |= posix.PROT.WRITE;
+        if (permission.execute) prot |= posix.PROT.EXEC;
         
         // Apply memory protection (this would use pkey_mprotect on MPK systems)
         try posix.mprotect(arena.memory, prot);
@@ -635,11 +669,16 @@ pub const Message = struct {
         payload: []const u8,
         sequence: u64,
     ) Message {
-        // In Zig 0.16, we use std.posix.system.clock_gettime for high-precision ns
-        var ts: posix.system.timespec = undefined;
-        _ = posix.system.clock_gettime(posix.system.CLOCK.MONOTONIC, &ts);
-        
-        const timestamp = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+<<<<<<< HEAD
+        // In Zig 0.16, we use std.posix.clock_gettime for high-precision ns
+        var ts: std.posix.timespec = undefined;
+        std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts) catch {
+            ts = .{ .tv_sec = 0, .tv_nsec = 0 };
+        };
+        const timestamp = @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
+=======
+        const timestamp = @as(u64, @intCast(@max(0, std.time.nanoTimestamp())));
+>>>>>>> 09068d2 (Fix HardenedRingBuffer wrapping logic and upgrade to Zig 0.16.0)
         const length = @as(u32, @intCast(@sizeOf(MessageHeader) + payload.len));
         
         return Message{
@@ -694,7 +733,7 @@ pub const SandboxManager = struct {
     sandboxes: std.AutoHashMap(u64, *SandboxContext),
     
     /// Ring buffer pool for IPC (pointers to avoid invalidation)
-    rings: std.ArrayListUnmanaged(*HardenedRingBuffer),
+    rings: std.ArrayList(*HardenedRingBuffer),
     
     /// Hardware protection key manager
     key_manager: MPKManager,
@@ -718,8 +757,13 @@ pub const SandboxManager = struct {
     
     pub fn init(allocator: std.mem.Allocator, config: Config) !SandboxManager {
         return SandboxManager{
+<<<<<<< HEAD
             .sandboxes = std.AutoHashMap(u64, *SandboxContext).init(allocator),
-            .rings = .empty,
+            .rings = std.ArrayList(*HardenedRingBuffer).init(allocator),
+=======
+            .sandboxes = std.AutoHashMap(u64, *SandboxContext).init(std.heap.page_allocator),
+            .rings = std.ArrayList(HardenedRingBuffer).init(std.heap.page_allocator),
+>>>>>>> 09068d2 (Fix HardenedRingBuffer wrapping logic and upgrade to Zig 0.16.0)
             .key_manager = MPKManager.init(),
             .sequence = 0,
             .allocator = allocator,
@@ -770,7 +814,7 @@ pub const SandboxManager = struct {
             target_tier,
         );
         
-        try manager.rings.append(manager.allocator, ring);
+        try manager.rings.append(ring);
         
         return ring;
     }
@@ -833,11 +877,15 @@ pub const SandboxManager = struct {
         }
         manager.sandboxes.deinit();
         
+<<<<<<< HEAD
         for (manager.rings.items) |ring| {
+=======
+        for (manager.rings.items) |*ring| {
+>>>>>>> 09068d2 (Fix HardenedRingBuffer wrapping logic and upgrade to Zig 0.16.0)
             ring.destroy();
             manager.allocator.destroy(ring);
         }
-        manager.rings.deinit(manager.allocator);
+        manager.rings.deinit();
     }
 };
 
@@ -862,7 +910,7 @@ pub const MPK = struct {
                     \\movl %[k], %%ecx
                     :
                     : [k] "r" (key),
-                    : .{ .eax = true, .ecx = true, .edx = true, .memory = true }
+                    : "eax", "ecx", "edx", "memory"
                 );
             }
         }
@@ -878,7 +926,7 @@ pub const MPK = struct {
                     \\movl %[k], %%ecx
                     :
                     : [k] "r" (read_disable_flag),
-                    : .{ .eax = true, .ecx = true, .edx = true, .memory = true }
+                    : "eax", "ecx", "edx", "memory"
                 );
             }
         }
@@ -893,7 +941,7 @@ pub const MPK = struct {
                     \\movl %[k], %%ecx
                     :
                     : [k] "r" (key),
-                    : .{ .eax = true, .ecx = true, .edx = true, .memory = true }
+                    : "eax", "ecx", "edx", "memory"
                 );
             }
         }
@@ -907,7 +955,7 @@ pub const MPK = struct {
                     \\xorl %%ecx, %%ecx
                     :
                     :
-                    : .{ .eax = true, .ecx = true, .edx = true, .memory = true }
+                    : "eax", "ecx", "edx", "memory"
                 );
             }
         }
@@ -1015,7 +1063,7 @@ test "Message serialization" {
     const payload = "Test payload";
     const msg = Message.create(.execute, 1, 2, @as([]const u8, payload), 42);
     
-    var buf: [1024]u8 align(@alignOf(MessageHeader)) = undefined;
+    var buf: [1024]u8 = undefined;
     try msg.serialize(&buf);
     
     const deserialized = try Message.deserialize(&buf);

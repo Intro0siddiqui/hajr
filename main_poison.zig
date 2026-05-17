@@ -71,18 +71,19 @@ pub const RingFlags = struct {
 pub const PoisonableRingMetadata = sandbox.RingMetadata;
 
 /// Poison the ring with cause
-pub fn poisonRing(ring: *PoisonableRingMetadata, cause: PoisonCause) void {
+pub fn poisonRing(ring: *volatile PoisonableRingMetadata, cause: PoisonCause) void {
     ring.poison_cause.store(@intFromEnum(cause), .release);
+    std.atomic.fence(.seq_cst);
     ring.poison_bit.store(true, .release);
 }
 
 /// Check if ring is poisoned
-pub fn isRingPoisoned(ring: *const PoisonableRingMetadata) bool {
+pub fn isRingPoisoned(ring: *const volatile PoisonableRingMetadata) bool {
     return ring.poison_bit.load(.acquire);
 }
 
 /// Get poison cause
-pub fn getRingPoisonCause(ring: *const PoisonableRingMetadata) PoisonCause {
+pub fn getRingPoisonCause(ring: *const volatile PoisonableRingMetadata) PoisonCause {
     return @enumFromInt(ring.poison_cause.load(.acquire));
 }
 
@@ -100,10 +101,10 @@ pub fn getRingPoisonCause(ring: *const PoisonableRingMetadata) PoisonCause {
 
 pub const Tier0Observer = struct {
     /// Observable rings and their associated sandboxes
-    observables: std.ArrayListUnmanaged(*ObservableRing),
+    observables: std.ArrayList(*ObservableRing),
     
     /// Poison event log
-    poison_log: std.ArrayListUnmanaged(PoisonRecord),
+    poison_log: std.ArrayList(PoisonRecord),
     
     /// Callback for when a sandbox is poisoned
     on_poison_callback: ?*const fn (sandbox_id: u64, cause: PoisonCause, record: PoisonRecord) void,
@@ -120,8 +121,8 @@ pub const Tier0Observer = struct {
         _ = config;
         const observer = try std.heap.page_allocator.create(Tier0Observer);
         observer.* = Tier0Observer{
-            .observables = .empty,
-            .poison_log = .empty,
+            .observables = std.ArrayList(*ObservableRing).init(std.heap.page_allocator),
+            .poison_log = std.ArrayList(PoisonRecord).init(std.heap.page_allocator),
             .on_poison_callback = null,
         };
         
@@ -130,14 +131,14 @@ pub const Tier0Observer = struct {
     
     /// Destroy observer
     pub fn destroy(observer: *Tier0Observer) void {
-        observer.observables.deinit(std.heap.page_allocator);
-        observer.poison_log.deinit(std.heap.page_allocator);
+        observer.observables.deinit();
+        observer.poison_log.deinit();
         std.heap.page_allocator.destroy(observer);
     }
     
     /// Register a ring for monitoring
     pub fn registerRing(observer: *Tier0Observer, ring: *ObservableRing) !void {
-        try observer.observables.append(std.heap.page_allocator, ring);
+        try observer.observables.append(ring);
     }
     
     /// Unregister a ring
@@ -158,26 +159,22 @@ pub const Tier0Observer = struct {
     /// 
     /// Returns list of poisoned sandbox IDs.
 
-    pub fn checkAllRings(observer: *Tier0Observer) ![]const u64 {
-        var poisoned = std.ArrayListUnmanaged(u64).empty;
+    pub fn checkAllRings(observer: *Tier0Observer) []const u64 {
+        var poisoned = std.ArrayList(u64).init(std.heap.page_allocator);
         
         for (observer.observables.items) |ring| {
             if (ring.isPoisoned()) {
                 // Record the poison event
-                var ts: posix.system.timespec = undefined;
-                _ = posix.system.clock_gettime(posix.system.CLOCK.MONOTONIC, &ts);
-                const timestamp = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-
                 const record = PoisonRecord{
-                    .timestamp_ns = timestamp,
+                    .timestamp_ns = @as(u64, @intCast(std.time.milliTimestamp())) * 1_000_000,
                     .sandbox_id = ring.sandbox_id,
                     .cause = @intFromEnum(ring.getPoisonCause()),
                     .sequence_at_fault = ring.metadata.sequence.load(.acquire),
                     .expected_sequence = ring.expected_sequence,
-                    .context = [1]u8{0} ** 64,
+                    .context = undefined,
                 };
                 
-                try observer.poison_log.append(std.heap.page_allocator, record);
+                try observer.poison_log.append(record);
                 
                 // Limit log size
                 if (observer.poison_log.items.len > MAX_POISON_RECORDS) {
@@ -186,14 +183,14 @@ pub const Tier0Observer = struct {
                 
                 // Trigger kill if enabled
                 if (observer.on_poison_callback) |callback| {
-                    callback(ring.sandbox_id, @enumFromInt(record.cause), record);
+                    callback(ring.sandbox_id, record.cause, record);
                 }
                 
-                try poisoned.append(std.heap.page_allocator, ring.sandbox_id);
+                try poisoned.append(ring.sandbox_id);
             }
         }
         
-        return poisoned.toOwnedSlice(std.heap.page_allocator);
+        return poisoned.toOwnedSlice();
     }
     
     /// Check single ring (optimized for single-sandbox case)
@@ -211,22 +208,22 @@ pub const Tier0Observer = struct {
     
     /// Get poison history for a sandbox
     pub fn getHistory(observer: *Tier0Observer, sandbox_id: u64) []const PoisonRecord {
-        var results = std.ArrayListUnmanaged(PoisonRecord).empty;
+        var results = std.ArrayList(PoisonRecord).init(std.heap.page_allocator);
         
         for (observer.poison_log.items) |record| {
             if (record.sandbox_id == sandbox_id) {
-                results.append(std.heap.page_allocator, record) catch {};
+                results.append(record) catch {};
             }
         }
         
-        return results.toOwnedSlice(std.heap.page_allocator) catch &.{} ;
+        return results.toOwnedSlice();
     }
 };
 
 /// Ring that can be observed by Tier 0
 pub const ObservableRing = struct {
     /// Ring metadata pointer
-    metadata: *PoisonableRingMetadata,
+    metadata: *volatile PoisonableRingMetadata,
     
     /// Ring base pointer (for unmapping on poison)
     base: [*]align(4096) u8,
@@ -295,7 +292,7 @@ pub const RecoveryManager = struct {
     createSandboxFn: *const fn () anyerror!u64,
     
     /// Active recovery operations
-    in_recovery: std.atomic.Value(bool),
+    in_recovery: atomic.Bool,
     
     /// Create recovery manager
     pub fn init(
@@ -309,7 +306,7 @@ pub const RecoveryManager = struct {
             .unmapFn = unmap_fn,
             .releaseKeyFn = release_key_fn,
             .createSandboxFn = create_sandbox_fn,
-            .in_recovery = std.atomic.Value(bool).init(false),
+            .in_recovery = atomic.Bool.init(false),
         };
     }
     
@@ -336,7 +333,7 @@ pub const RecoveryManager = struct {
         recovery.releaseHardwareKey(sandbox_id);
         
         // 4. Create new sandbox
-        const new_id = try (recovery.createSandboxFn)();
+        const new_id = try recovery.createSandboxFn();
         
         return new_id;
     }
@@ -357,6 +354,7 @@ pub const RecoveryManager = struct {
                 return;
             }
         }
+        _ = recovery;
     }
     
     /// Unmap sandbox memory
@@ -367,6 +365,7 @@ pub const RecoveryManager = struct {
                 return;
             }
         }
+        _ = recovery;
     }
     
     /// Release hardware protection key
@@ -379,7 +378,7 @@ pub const RecoveryManager = struct {
     
     /// Recovery with panic on failure
     pub fn recoverOrPanic(recovery: *RecoveryManager, sandbox_id: u64) u64 {
-        return recovery.recover(sandbox_id) catch |err| {
+        recovery.recover(sandbox_id) catch |err| {
             @panic(switch (err) {
                 error.OutOfMemory => "Out of memory during recovery",
                 error.KeyAllocationFailed => "Failed to allocate hardware key",
@@ -396,7 +395,7 @@ pub const RecoveryManager = struct {
 
 /// Default memory unmapping function
 pub fn defaultUnmap(base: [*]align(4096) u8, size: usize) void {
-    posix.munmap(base[0..size]);
+    posix.munmap(base[0..size]) catch return;
 }
 
 /// Default hardware key release function
@@ -407,7 +406,7 @@ pub fn defaultReleaseKey(key: u32) void {
 
 /// Generate panic record for forensic analysis
 pub fn generatePoisonReport(record: PoisonRecord) []u8 {
-    var report = std.ArrayListUnmanaged(u8).empty;
+    var report = std.ArrayList(u8).init(std.heap.page_allocator);
     
     const cause_str = switch (@as(PoisonCause, @enumFromInt(record.cause))) {
         .unknown => "UNKNOWN",
@@ -421,32 +420,21 @@ pub fn generatePoisonReport(record: PoisonRecord) []u8 {
         .timeout => "TIMEOUT",
     };
     
-    report.appendSlice(std.heap.page_allocator, "POISON REPORT\n") catch {};
-    report.appendSlice(std.heap.page_allocator, "=============\n") catch {};
-    report.appendSlice(std.heap.page_allocator, "Sandbox ID: ") catch {};
+    report.appendSlice("POISON REPORT\n") catch {};
+    report.appendSlice("=============\n") catch {};
+    report.appendSlice("Sandbox ID: ") catch {};
+    report.appendFmt("{}\n", .{record.sandbox_id}) catch {};
+    report.appendSlice("Cause: ") catch {};
+    report.appendSlice(cause_str) catch {};
+    report.appendSlice("\n") catch {};
+    report.appendSlice("Timestamp: ") catch {};
+    report.appendFmt("{}\n", .{record.timestamp_ns}) catch {};
+    report.appendSlice("Sequence at fault: ") catch {};
+    report.appendFmt("{}\n", .{record.sequence_at_fault}) catch {};
+    report.appendSlice("Expected sequence: ") catch {};
+    report.appendFmt("{}\n", .{record.expected_sequence}) catch {};
     
-    // Using bufPrint for simplicity in report generation
-    var buf: [32]u8 = undefined;
-    const id_str = std.fmt.bufPrint(&buf, "{}\n", .{record.sandbox_id}) catch "ERR\n";
-    report.appendSlice(std.heap.page_allocator, id_str) catch {};
-    
-    report.appendSlice(std.heap.page_allocator, "Cause: ") catch {};
-    report.appendSlice(std.heap.page_allocator, cause_str) catch {};
-    report.appendSlice(std.heap.page_allocator, "\n") catch {};
-    report.appendSlice(std.heap.page_allocator, "Timestamp: ") catch {};
-    
-    const ts_str = std.fmt.bufPrint(&buf, "{}\n", .{record.timestamp_ns}) catch "ERR\n";
-    report.appendSlice(std.heap.page_allocator, ts_str) catch {};
-    
-    report.appendSlice(std.heap.page_allocator, "Sequence at fault: ") catch {};
-    const seq_str = std.fmt.bufPrint(&buf, "{}\n", .{record.sequence_at_fault}) catch "ERR\n";
-    report.appendSlice(std.heap.page_allocator, seq_str) catch {};
-    
-    report.appendSlice(std.heap.page_allocator, "Expected sequence: ") catch {};
-    const exp_str = std.fmt.bufPrint(&buf, "{}\n", .{record.expected_sequence}) catch "ERR\n";
-    report.appendSlice(std.heap.page_allocator, exp_str) catch {};
-    
-    return report.toOwnedSlice(std.heap.page_allocator) catch &.{} ;
+    return report.toOwnedSlice();
 }
 
 // ============================================================================
@@ -456,19 +444,19 @@ pub fn generatePoisonReport(record: PoisonRecord) []u8 {
 /// Enhanced RingRouter with poison protocol integration
 pub const PoisonAwareRouter = struct {
     /// Base router
-    base: sandbox.SandboxManager, // Changed to SandboxManager as RingRouter seems missing or renamed
+    base: RingRouter,
     /// Observer for poison detection
     observer: *Tier0Observer,
     /// Recovery manager
     recovery: *RecoveryManager,
     
     pub fn init(
-        allocator: std.mem.Allocator,
-        config: sandbox.SandboxManager.Config,
+        handlers: BackendHandler,
+        config: RingRouter.Config,
         observer: *Tier0Observer,
         recovery: *RecoveryManager,
     ) !PoisonAwareRouter {
-        const base = try sandbox.SandboxManager.init(allocator, config);
+        const base = try RingRouter.init(handlers, config);
         return PoisonAwareRouter{
             .base = base,
             .observer = observer,
@@ -477,7 +465,7 @@ pub const PoisonAwareRouter = struct {
     }
     
     pub fn destroy(router: *PoisonAwareRouter) void {
-        router.base.shutdown();
+        router.base.destroy();
     }
     
     /// Poll with poison detection and recovery
@@ -486,18 +474,26 @@ pub const PoisonAwareRouter = struct {
     /// It checks for poison bits before polling and triggers
     /// recovery if any are detected.
     
-    pub fn poll(router: *PoisonAwareRouter) !usize {
+    pub fn poll(router: *PoisonAwareRouter) usize {
         // First, check all rings for poison (fail-fast)
-        const poisoned = try router.observer.checkAllRings();
-        defer std.heap.page_allocator.free(poisoned);
+        const poisoned = router.observer.checkAllRings();
         
         // Recover any poisoned sandboxes immediately
         for (poisoned) |sandbox_id| {
-            _ = router.recovery.recoverOrPanic(sandbox_id);
+            router.recovery.recoverOrPanic(sandbox_id);
         }
         
         // Then poll remaining active rings
-        // Note: actual polling logic would be here
-        return 0;
+        return router.base.poll();
+    }
+    
+    /// Force check for poison (can be called from signal handler)
+    pub fn forceCheck(router: *PoisonAwareRouter) void {
+        const poisoned = router.observer.checkAllRings();
+        
+        for (poisoned) |sandbox_id| {
+            // Don't recover from signal handler - just mark for recovery
+            router.observer.unregisterRing(sandbox_id);
+        }
     }
 };

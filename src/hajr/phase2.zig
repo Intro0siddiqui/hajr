@@ -522,14 +522,14 @@ test "Poison protocol integration" {
     var meta = std.mem.zeroes(poison.PoisonableRingMetadata);
     
     // Initially not poisoned
-    try std.testing.expect(!isRingPoisoned(&meta));
+    try std.testing.expect(!poison.isRingPoisoned(&meta));
     
     // Poison the ring
-    poisonRing(&meta, .sequence_anomaly);
+    poison.poisonRing(&meta, .sequence_anomaly);
     
     // Now poisoned
-    try std.testing.expect(isRingPoisoned(&meta));
-    try std.testing.expectEqual(@as(PoisonCause, .sequence_anomaly), getRingPoisonCause(&meta));
+    try std.testing.expect(poison.isRingPoisoned(&meta));
+    try std.testing.expectEqual(@as(poison.PoisonCause, .sequence_anomaly), poison.getRingPoisonCause(&meta));
 }
 
 test "Router integration with poison detection" {

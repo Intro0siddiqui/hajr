@@ -9,7 +9,7 @@ pub fn build(b: *Build) void {
     const lib = b.addLibrary(.{
         .name = "hajr",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/core/sandbox.zig"),
+            .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -21,7 +21,7 @@ pub fn build(b: *Build) void {
     // Build tests
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/hajr/phase2.zig"),
+            .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = optimize,
         }),
