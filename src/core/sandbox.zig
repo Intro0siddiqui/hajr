@@ -852,64 +852,70 @@ pub const MPK = struct {
     /// This instruction modifies the protection key rights for the current thread.
     /// When a key's access is removed, any memory access through that key triggers #GP (general protection fault).
     pub const wrpkru = struct {
-        /// Disable all access for a key
+        /// Low-level WRPKRU instruction wrapper
+        pub fn writePKRU(value: u32) void {
+            if (builtin.cpu.arch == .x86_64) {
+                asm volatile (
+                    \\xorl %%ecx, %%ecx
+                    \\xorl %%edx, %%edx
+                    \\wrpkru
+                    :
+                    : [val] "{eax}" (value)
+                    : .{ .ecx = true, .edx = true, .memory = true }
+                );
+            }
+        }
+
+        /// Low-level RDPKRU instruction wrapper
+        pub fn readPKRU() u32 {
+            if (builtin.cpu.arch == .x86_64) {
+                var value: u32 = undefined;
+                asm volatile (
+                    \\xorl %%ecx, %%ecx
+                    \\rdpkru
+                    : [ret] "={eax}" (value)
+                    :
+                    : .{ .ecx = true, .edx = true }
+                );
+                return value;
+            }
+            return 0;
+        }
+
+        /// Disable all access for a key (AD=1, WD=1)
         pub fn disableAccess(key: u32) void {
             if (builtin.cpu.arch == .x86_64) {
-                // ECX = 0 (disable access), EDX:EAX = 0 (all threads)
-                asm volatile (
-                    \\movl $0, %%eax
-                    \\movl $0, %%edx
-                    \\movl %[k], %%ecx
-                    :
-                    : [k] "r" (key),
-                    : .{ .eax = true, .ecx = true, .edx = true, .memory = true }
-                );
+                var pkru = readPKRU();
+                const shift: u5 = @intCast(key * 2);
+                pkru |= (@as(u32, 0b11) << shift);
+                writePKRU(pkru);
             }
         }
         
-        /// Enable read-only access for a key
+        /// Enable read-only access for a key (AD=0, WD=1)
         pub fn enableReadOnly(key: u32) void {
             if (builtin.cpu.arch == .x86_64) {
-                // ECX = 0, EDX:EAX = 0, but with read-only flag
-                const read_disable_flag: u32 = @as(u32, 1) << @as(u5, @intCast(key * 2));
-                asm volatile (
-                    \\movl $0, %%eax
-                    \\movl $0, %%edx
-                    \\movl %[k], %%ecx
-                    :
-                    : [k] "r" (read_disable_flag),
-                    : .{ .eax = true, .ecx = true, .edx = true, .memory = true }
-                );
+                var pkru = readPKRU();
+                const shift: u5 = @intCast(key * 2);
+                pkru &= ~(@as(u32, 0b01) << shift); // Clear AD
+                pkru |= (@as(u32, 0b10) << shift);  // Set WD
+                writePKRU(pkru);
             }
         }
         
-        /// Enable full access for a key
+        /// Enable full access for a key (AD=0, WD=0)
         pub fn enableFullAccess(key: u32) void {
             if (builtin.cpu.arch == .x86_64) {
-                // ECX = key, EDX:EAX = 0 (allow all rights)
-                asm volatile (
-                    \\xorl %%eax, %%eax
-                    \\xorl %%edx, %%edx
-                    \\movl %[k], %%ecx
-                    :
-                    : [k] "r" (key),
-                    : .{ .eax = true, .ecx = true, .edx = true, .memory = true }
-                );
+                var pkru = readPKRU();
+                const shift: u5 = @intCast(key * 2);
+                pkru &= ~(@as(u32, 0b11) << shift); // Clear AD and WD
+                writePKRU(pkru);
             }
         }
         
-        /// Reset all keys to default state
+        /// Reset all keys to default state (Allow all)
         pub fn resetAll() void {
-            if (builtin.cpu.arch == .x86_64) {
-                asm volatile (
-                    \\xorl %%eax, %%eax
-                    \\xorl %%edx, %%edx
-                    \\xorl %%ecx, %%ecx
-                    :
-                    :
-                    : .{ .eax = true, .ecx = true, .edx = true, .memory = true }
-                );
-            }
+            writePKRU(0);
         }
     };
 };

@@ -7,6 +7,8 @@ const std = @import("std");
 const atomic = std.atomic;
 const mem = std.mem;
 const builtin = @import("builtin");
+const hajr = @import("../root.zig").hajr;
+const sandbox = @import("../core/sandbox.zig");
 
 // ============================================================================
 // IPC Architecture
@@ -25,6 +27,15 @@ pub const SandboxTier = enum(u8) {
     trusted = 1,
     untrusted = 2,
     isolated = 3,
+
+    pub fn getProtectionKey(tier: SandboxTier) u32 {
+        return switch (tier) {
+            .root => 0,
+            .trusted => 1,
+            .untrusted => 2,
+            .isolated => 3,
+        };
+    }
 };
 
 /// Message types for IPC
@@ -94,7 +105,7 @@ pub const RING_SLOTS: usize = 64;
 /// Ring buffer slot
 pub const RingSlot = struct {
     /// Whether slot is occupied
-    occupied: atomic.Bool,
+    occupied: atomic.Value(bool),
     /// Message header
     header: IpcHeader,
     /// Payload data (inline for small messages)
@@ -104,15 +115,13 @@ pub const RingSlot = struct {
 /// Lock-free IPC ring buffer
 pub const IpcRing = struct {
     /// Ring slots
-    slots: [*]RingSlot,
-    /// Number of slots
-    slot_count: usize,
+    slots: []RingSlot,
     /// Head index (producer)
-    head: atomic(u64),
+    head: atomic.Value(u64),
     /// Tail index (consumer)
-    tail: atomic(u64),
+    tail: atomic.Value(u64),
     /// Sequence counter
-    sequence: atomic(u64),
+    sequence: atomic.Value(u64),
     /// Hardware protection key
     protection_key: u32,
     /// Source tier
@@ -127,28 +136,23 @@ pub const IpcRing = struct {
         source_tier: SandboxTier,
         target_tier: SandboxTier,
     ) !*IpcRing {
-        const total_size = slot_count * @sizeOf(RingSlot);
-        
-        // Allocate aligned memory
-        const memory = try std.heap.page_allocator.alignedAlloc(u8, 4096, total_size);
-        defer std.heap.page_allocator.free(memory);
+        const slots = try std.heap.page_allocator.alloc(RingSlot, slot_count);
         
         const ring = try std.heap.page_allocator.create(IpcRing);
         ring.* = .{
-            .slots = @ptrFromInt(@intFromPtr(memory.ptr)),
-            .slot_count = slot_count,
-            .head = atomic(u64).init(0),
-            .tail = atomic(u64).init(0),
-            .sequence = atomic(u64).init(0),
+            .slots = slots,
+            .head = atomic.Value(u64).init(0),
+            .tail = atomic.Value(u64).init(0),
+            .sequence = atomic.Value(u64).init(0),
             .protection_key = protection_key,
             .source_tier = source_tier,
             .target_tier = target_tier,
         };
         
         // Initialize slots
-        for (0..slot_count) |i| {
-            ring.slots[i].occupied.store(false, .unordered);
-            @memset(@as([*]u8, @ptrFromInt(@intFromPtr(&ring.slots[i].payload)))[0..ring.slots[i].payload.len], 0);
+        for (ring.slots) |*slot| {
+            slot.occupied = atomic.Value(bool).init(false);
+            @memset(&slot.payload, 0);
         }
         
         return ring;
@@ -167,8 +171,8 @@ pub const IpcRing = struct {
         }
         
         // Get current head and advance
-        const head = @atomicRmw(u64, &ring.head, .Add, 1, .acq_rel);
-        const slot_idx = head % ring.slot_count;
+        const head = ring.head.fetchAdd(1, .acq_rel);
+        const slot_idx = head % ring.slots.len;
         
         // Wait for slot to be free
         var waited: usize = 0;
@@ -193,7 +197,7 @@ pub const IpcRing = struct {
             .reserved = 0,
         };
         
-        @memcpy(&slot.payload, payload);
+        @memcpy(slot.payload[0..payload.len], payload);
         
         // Memory barrier before marking occupied
         std.atomic.fence(.release);
@@ -203,8 +207,8 @@ pub const IpcRing = struct {
     
     /// Receive a message (consumer side)
     pub fn recv(ring: *IpcRing, buf: *std.ArrayList(u8)) !IpcHeader {
-        const tail = @atomicRmw(u64, &ring.tail, .Add, 1, .acq_rel);
-        const slot_idx = tail % ring.slot_count;
+        const tail = ring.tail.fetchAdd(1, .acq_rel);
+        const slot_idx = tail % ring.slots.len;
         
         const slot = &ring.slots[slot_idx];
         
@@ -221,7 +225,7 @@ pub const IpcRing = struct {
         // Read header and payload
         const header = slot.header;
         try buf.resize(header.payload_len);
-        @memcpy(buf.items.ptr, &slot.payload, header.payload_len);
+        @memcpy(buf.items.ptr, slot.payload[0..header.payload_len].ptr, header.payload_len);
         
         // Clear slot and mark free
         std.atomic.fence(.release);
@@ -233,17 +237,21 @@ pub const IpcRing = struct {
     /// Try to receive without blocking
     pub fn tryRecv(ring: *IpcRing, buf: *std.ArrayList(u8)) ?IpcHeader {
         const tail = ring.tail.load(.acquire);
-        const slot_idx = tail % ring.slot_count;
+        const slot_idx = tail % ring.slots.len;
         
         const slot = &ring.slots[slot_idx];
         if (!slot.occupied.load(.acquire)) {
             return null;
         }
         
+        // Double-check we haven't advanced past it (rare in SPSC but good for robustness)
+        if (ring.tail.load(.acquire) != tail) return null;
+
         const header = slot.header;
         buf.resize(header.payload_len) catch return null;
-        @memcpy(buf.items.ptr, &slot.payload, header.payload_len);
+        @memcpy(buf.items.ptr, slot.payload[0..header.payload_len].ptr, header.payload_len);
         
+        _ = ring.tail.fetchAdd(1, .acq_rel); // Now actually consume it
         std.atomic.fence(.release);
         slot.occupied.store(false, .release);
         
@@ -259,6 +267,7 @@ pub const IpcRing = struct {
     
     /// Destroy ring
     pub fn destroy(ring: *IpcRing) void {
+        std.heap.page_allocator.free(ring.slots);
         std.heap.page_allocator.destroy(ring);
     }
 };
@@ -416,6 +425,8 @@ pub const IpcRouter = struct {
     }
 };
 
+const protection = hajr.protection;
+
 /// Extension trait for hardware protection
 pub const HardwareProtection = struct {
     /// Get MPK protection key for tier
@@ -430,28 +441,22 @@ pub const HardwareProtection = struct {
     
     /// Apply MPK protection to memory region
     pub fn applyProtection(base: [*]u8, size: usize, key: u32, read: bool, write: bool) !void {
-        _ = base;
-        _ = size;
-        _ = key;
         _ = read;
         _ = write;
-        // Would use pkey_mprotect on Linux with MPK support
+        try protection.ProtectionProvider.applyToRegion(base, size, key);
     }
     
     /// Remove all MPK protection (for trusted code)
     pub fn clearProtection() void {
-        // Would reset PKRU to allow access to all keys
+        protection.ProtectionProvider.setProtection(0, .read_write);
     }
     
     /// Set protection key for untrusted code (should be called before entering sandbox)
-    pub fn setSandboxProtection(key: u32) void {
-        // WRPKRU instruction to set protection key for current thread
-        if (builtin.cpu.arch == .x86_64) {
-            asm volatile ("xorl %%eax, %%eax\nxorl %%edx, %%edx\nmovl %0, %%ecx\nwrpkru"
-                :
-                : "r" (key)
-                : "eax", "ecx", "edx", "memory"
-            );
+    pub fn setSandboxProtection(value: u32) void {
+        // Here 'value' is assumed to be the PKRU bitmask or a key index depending on usage
+        // For consistency with ProtectionProvider, we treat it as a bitmask/value
+        if (builtin.cpu.arch == .x86_64 and builtin.os.tag == .linux) {
+            sandbox.MPK.wrpkru.writePKRU(value);
         }
     }
 };

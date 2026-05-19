@@ -5,6 +5,7 @@ pub const hajr = struct {
     pub const router = @import("hajr/router.zig");
     pub const poison = @import("hajr/poison.zig");
     pub const phase2 = @import("hajr/phase2.zig");
+    pub const protection = @import("hajr/protection.zig");
 };
 
 test {
