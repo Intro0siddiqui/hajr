@@ -1,11 +1,15 @@
 const std = @import("std");
-const posix = std.posix;
+const hw = @import("../hw/mod.zig");
+const router = @import("router.zig");
 
 // ============================================================================
 // Hajr Arena Layout Manager (Task 1)
 // ============================================================================
 
-pub const PAGE_SIZE: usize = 4096;
+/// Safe maximum alignment for OS-agnostic page alignment (64KB)
+pub const PAGE_SIZE: usize = 65536;
+
+pub const SegmentInfo = struct { offset: usize, size: usize };
 
 pub const ArenaLayout = struct {
     inbound_size: usize,
@@ -22,26 +26,59 @@ pub const ArenaLayout = struct {
                alignToPage(self.outbound_size) +
                alignToPage(self.js_heap_size);
     }
+
+    pub fn defaultConfig() ArenaLayout {
+        return .{
+            .inbound_size = 64 * 1024,
+            .outbound_size = 64 * 1024,
+            .js_heap_size = 8 * 1024 * 1024,
+        };
+    }
+
+    pub fn generateSegments(self: ArenaLayout) [3]SegmentInfo {
+        const inbound_s = alignToPage(self.inbound_size);
+        const outbound_s = alignToPage(self.outbound_size);
+        const js_heap_s = alignToPage(self.js_heap_size);
+        return [_]SegmentInfo{
+            .{ .offset = 0, .size = inbound_s },
+            .{ .offset = inbound_s, .size = outbound_s },
+            .{ .offset = inbound_s + outbound_s, .size = js_heap_s },
+        };
+    }
 };
+
+pub fn isPageAligned(addr: usize) bool {
+    return (addr & (PAGE_SIZE - 1)) == 0;
+}
 
 pub const SandboxMemory = struct {
     /// Single contiguous block of memory
     base: [*]align(PAGE_SIZE) u8,
     size: usize,
     layout: ArenaLayout,
+    protection_key: u32,
 
     /// Allocate deterministic memory layout mapped by OS-agnostic page allocator
     pub fn create(layout: ArenaLayout) !*SandboxMemory {
         const total_size = layout.totalSize();
 
-        // Use OS-agnostic page allocator to map the single contiguous block directly
+        // 1. Allocate hardware protection key
+        const token = try hw.compartment.global_allocator.alloc();
+        errdefer hw.compartment.global_allocator.free(token);
+
+        // 2. Allocate memory
         const mapped = try std.heap.page_allocator.alignedAlloc(u8, std.mem.Alignment.fromByteUnits(PAGE_SIZE), total_size);
+        errdefer std.heap.page_allocator.free(mapped);
+
+        // 3. Apply hardware protection to the entire region
+        try hw.applyProtectionToRegion(mapped.ptr, total_size, token.id);
 
         const arena = try std.heap.page_allocator.create(SandboxMemory);
         arena.* = SandboxMemory{
             .base = @alignCast(mapped.ptr),
             .size = total_size,
             .layout = layout,
+            .protection_key = token.id,
         };
 
         return arena;
@@ -49,14 +86,65 @@ pub const SandboxMemory = struct {
 
     pub fn destroy(self: *SandboxMemory) void {
         const slice = self.base[0..self.size];
+
+        // 1. Free hardware protection key
+        hw.compartment.global_allocator.free(.{ .id = self.protection_key });
+
+        // 2. Free memory
         std.heap.page_allocator.free(slice);
         std.heap.page_allocator.destroy(self);
     }
+pub const SegmentType = enum {
+    inbound_ring,
+    outbound_ring,
+    js_heap,
+};
 
-    /// Segment A: Inbound HardenedRingBuffer
-    pub fn getInboundRingSegment(self: *const SandboxMemory) [*]align(PAGE_SIZE) u8 {
-        return self.base;
-    }
+pub const SegmentBounds = struct {
+    pointer: hw.pointer.TaggedPointer(u8),
+    size: usize,
+};
+
+pub fn getSegmentBounds(self: *const SandboxMemory, segment: SegmentType) SegmentBounds {
+    const raw_ptr = switch (segment) {
+        .inbound_ring => self.base,
+        .outbound_ring => self.getOutboundRingSegment(),
+        .js_heap => self.getJsHeapSegment(),
+    };
+    const size = switch (segment) {
+        .inbound_ring => ArenaLayout.alignToPage(self.layout.inbound_size),
+        .outbound_ring => ArenaLayout.alignToPage(self.layout.outbound_size),
+        .js_heap => ArenaLayout.alignToPage(self.layout.js_heap_size),
+    };
+
+    return .{
+        .pointer = hw.pointer.TaggedPointer(u8).fromRawWithTag(@ptrCast(raw_ptr), @intCast(self.protection_key & 0xF)),
+        .size = size,
+    };
+}
+
+pub fn getRingMetadata(self: *const SandboxMemory, segment: SegmentType) ?*router.RingMetadata {
+    const bounds = self.getSegmentBounds(segment);
+    if (segment == .js_heap) return null;
+    return @ptrCast(@alignCast(bounds.pointer.toRaw()));
+}
+
+pub fn getJsHeapPointer(self: *const SandboxMemory) hw.pointer.TaggedPointer(u8) {
+    return hw.pointer.TaggedPointer(u8).fromRawWithTag(@ptrCast(self.getJsHeapSegment()), @intCast(self.protection_key & 0xF));
+}
+
+pub fn getJsHeapSize(self: *const SandboxMemory) usize {
+    return ArenaLayout.alignToPage(self.layout.js_heap_size);
+}
+
+pub fn validatePointer(self: *const SandboxMemory, segment: SegmentType, ptr: [*]const u8, len: usize) bool {
+    const bounds = self.getSegmentBounds(segment);
+    const start = @intFromPtr(ptr);
+    const end = start + len;
+    const b_start = @intFromPtr(bounds.pointer.toRaw());
+    const b_end = b_start + bounds.size;
+    return start >= b_start and end <= b_end;
+}
 
     /// Segment B: Outbound HardenedRingBuffer
     pub fn getOutboundRingSegment(self: *const SandboxMemory) [*]align(PAGE_SIZE) u8 {

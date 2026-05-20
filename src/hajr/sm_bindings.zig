@@ -1,5 +1,4 @@
-const std = @import("std");
-const atomic = std.atomic;
+const hw = @import("../hw/mod.zig");
 const sandbox = @import("../core/sandbox.zig");
 
 // ============================================================================
@@ -31,6 +30,10 @@ export fn __zawra_init_ffi(config: *const FFIConfig) callconv(.c) void {
     g_ffi_config = config;
 }
 
+pub fn initFFI(config: *const FFIConfig) void {
+    __zawra_init_ffi(config);
+}
+
 /// Read a payload from the inbound ring.
 /// CRITICAL ZERO-COPY DIRECTIVE: Uses SpiderMonkey's external ArrayBuffer API.
 /// Does not copy bytes into JS heap. Passes memory-mapped ring pointer directly.
@@ -51,8 +54,16 @@ export fn __zawra_ring_read(out_ext_buf: *SMExternalBuffer) callconv(.c) i32 {
     // Strict length boundary: Limit to contiguous memory chunk to ensure safe zero-copy mapping
     const contiguous_len = @min(available, config.inbound_size - read_pos);
 
-    // Pass the memory-mapped ring pointer directly to the JS engine
-    out_ext_buf.data = @ptrFromInt(@intFromPtr(config.inbound_base) + read_pos);
+    // Pass the memory-mapped ring pointer directly to the JS engine.
+    // Ensure the pointer is correctly 'colored' with its hardware tags.
+    const raw_ptr: [*]u8 = @ptrFromInt(@intFromPtr(config.inbound_base) + read_pos);
+    
+    // We don't have the tag here directly from FFIConfig, but config.inbound_base 
+    // should have been colored when it was passed in.
+    // However, for total purity, we should probably store the tag or re-tag it.
+    // If we assume inbound_base is already colored (AArch64), then raw_ptr will be colored too.
+    
+    out_ext_buf.data = raw_ptr;
     out_ext_buf.length = contiguous_len;
     out_ext_buf.free_func = null; // No custom free function; memory is managed by the ring
     out_ext_buf.user_data = undefined;

@@ -6,7 +6,7 @@
 const std = @import("std");
 const posix = std.posix;
 const net = std.net;
-const os = std.os;
+const sandbox = @import("../core/sandbox.zig");
 
 // ============================================================================
 // QUIC/HTTP3 Stack Architecture
@@ -40,19 +40,18 @@ pub const ConnectionState = enum(u8) {
 /// Connection identifier
 pub const ConnectionId = extern struct {
     bytes: [18]u8, // Variable length up to 18 bytes
+    len: u8,
     
     pub fn isValid(id: ConnectionId) bool {
-        inline for (id.bytes, 0..) |byte, i| {
-            _ = i;
-            if (byte != 0) return true;
-        }
-        return false;
+        return id.len > 0;
     }
     
     pub fn fromSlice(slice: []const u8) ConnectionId {
-        var id = ConnectionId{ .bytes = undefined };
+        var id = ConnectionId{ .bytes = undefined, .len = 0 };
         @memset(&id.bytes, 0);
-        @memcpy(&id.bytes, slice[0..@min(slice.len, 18)]);
+        const len = @min(slice.len, 18);
+        @memcpy(id.bytes[0..len], slice[0..len]);
+        id.len = @as(u8, @intCast(len));
         return id;
     }
 };
@@ -65,33 +64,15 @@ pub const PacketType = enum(u4) {
     short = 3,
 };
 
-/// QUIC frame types
-pub const FrameType = enum(u64) {
-    padding = 0,
-    ping = 1,
-    ack = 2,
-    ack_maybe = 3,
-    rst_stream = 4,
-    stop_sending = 5,
-    max_data = 6,
-    max_stream_data = 7,
-    max_streams = 8,
-    data_blocked = 9,
-    stream_data_blocked = 10,
-    streams_blocked = 11,
-    new_connection_id = 12,
-    retire_connection_id = 13,
-    path_challenge = 14,
-    path_response = 15,
-    connection_close = 18,
-    handshake_done = 19,
-    // HTTP/3 frames
-    settings = 6,
+/// HTTP/3 frame types (separate enum to avoid duplicate values with FrameType)
+pub const Http3FrameType = enum(u64) {
+    data = 0,
     headers = 1,
-    request = 0,
-    response = 1,
-    push = 2,
+    cancel_push = 3,
+    settings = 4,
+    push_promise = 5,
     goaway = 7,
+    max_push_id = 13,
 };
 
 /// QUIC packet header
@@ -109,9 +90,9 @@ pub const PacketHeader = struct {
     /// Reserved bits
     reserved: u2,
     
-    pub fn serialize(header: PacketHeader, buf: *std.ArrayList(u8)) !void {
+    pub fn serialize(header: PacketHeader, allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8)) !void {
         // Variable length encoding for connection ID
-        const cid_len = header.dest_conn_id.bytes[0];
+        const cid_len = header.dest_conn_id.len;
         
         // First byte: packet type + fixed bit
         var first_byte: u8 = @as(u8, @intFromEnum(header.packet_type)) << 4 | 0x40;
@@ -119,42 +100,42 @@ pub const PacketHeader = struct {
         if (header.key_phase) first_byte |= 0x04;
         first_byte |= header.reserved;
         
-        try buf.append(first_byte);
+        try buf.append(allocator, first_byte);
         
         // Connection ID length
-        try buf.append(cid_len);
+        try buf.append(allocator, cid_len);
         
         // Connection ID bytes
-        try buf.appendSlice(&header.dest_conn_id.bytes[0..cid_len]);
+        try buf.appendSlice(allocator, header.dest_conn_id.bytes[0..cid_len]);
         
         // Packet number (variable length)
-        try writeVarint(buf, header.packet_number);
+        try writeVarint(allocator, buf, header.packet_number);
     }
     
-    fn writeVarint(buf: *std.ArrayList(u8), value: u64) !void {
+    fn writeVarint(allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8), value: u64) !void {
         if (value < 0x3F) {
-            try buf.append(@as(u8, @intCast(value)));
+            try buf.append(allocator, @as(u8, @intCast(value)));
         } else if (value < 0x3FFF) {
             const b0 = @as(u8, @intCast((value >> 8) | 0x40));
             const b1 = @as(u8, @intCast(value & 0xFF));
-            try buf.append(b0);
-            try buf.append(b1);
+            try buf.append(allocator, b0);
+            try buf.append(allocator, b1);
         } else if (value < 0x3FFFFFFF) {
-            const b0 = @as(u8, @intCast((value >> 24) | 0x80);
-            try buf.append(b0);
-            try buf.append(@as(u8, @intCast((value >> 16) & 0xFF)));
-            try buf.append(@as(u8, @intCast((value >> 8) & 0xFF)));
-            try buf.append(@as(u8, @intCast(value & 0xFF)));
+            const b0 = @as(u8, @intCast((value >> 24) | 0x80));
+            try buf.append(allocator, b0);
+            try buf.append(allocator, @as(u8, @intCast((value >> 16) & 0xFF)));
+            try buf.append(allocator, @as(u8, @intCast((value >> 8) & 0xFF)));
+            try buf.append(allocator, @as(u8, @intCast(value & 0xFF)));
         } else {
             const b0 = @as(u8, @intCast((value >> 56) | 0xC0));
-            try buf.append(b0);
-            try buf.append(@as(u8, @intCast((value >> 48) & 0xFF)));
-            try buf.append(@as(u8, @intCast((value >> 40) & 0xFF)));
-            try buf.append(@as(u8, @intCast((value >> 32) & 0xFF)));
-            try buf.append(@as(u8, @intCast((value >> 24) & 0xFF)));
-            try buf.append(@as(u8, @intCast((value >> 16) & 0xFF)));
-            try buf.append(@as(u8, @intCast((value >> 8) & 0xFF)));
-            try buf.append(@as(u8, @intCast(value & 0xFF)));
+            try buf.append(allocator, b0);
+            try buf.append(allocator, @as(u8, @intCast((value >> 48) & 0xFF)));
+            try buf.append(allocator, @as(u8, @intCast((value >> 40) & 0xFF)));
+            try buf.append(allocator, @as(u8, @intCast((value >> 32) & 0xFF)));
+            try buf.append(allocator, @as(u8, @intCast((value >> 24) & 0xFF)));
+            try buf.append(allocator, @as(u8, @intCast((value >> 16) & 0xFF)));
+            try buf.append(allocator, @as(u8, @intCast((value >> 8) & 0xFF)));
+            try buf.append(allocator, @as(u8, @intCast(value & 0xFF)));
         }
     }
 };
@@ -180,9 +161,9 @@ pub const Http3Stream = struct {
     /// Stream state
     state: StreamState,
     /// Incoming data buffer
-    recv_buffer: std.ArrayList(u8),
+    recv_buffer: std.ArrayListUnmanaged(u8),
     /// Outgoing data buffer
-    send_buffer: std.ArrayList(u8),
+    send_buffer: std.ArrayListUnmanaged(u8),
     /// Unidirectional or bidirectional
     unidirectional: bool,
     
@@ -198,15 +179,15 @@ pub const Http3Stream = struct {
         return Http3Stream{
             .stream_id = stream_id,
             .state = .idle,
-            .recv_buffer = std.ArrayList(u8).init(std.heap.page_allocator),
-            .send_buffer = std.ArrayList(u8).init(std.heap.page_allocator),
+            .recv_buffer = .empty,
+            .send_buffer = .empty,
             .unidirectional = unidirectional,
         };
     }
     
-    pub fn deinit(stream: *Http3Stream) void {
-        stream.recv_buffer.deinit();
-        stream.send_buffer.deinit();
+    pub fn deinit(stream: *Http3Stream, allocator: std.mem.Allocator) void {
+        stream.recv_buffer.deinit(allocator);
+        stream.send_buffer.deinit(allocator);
     }
 };
 
@@ -228,27 +209,31 @@ pub const Http3Connection = struct {
     local_settings: Http3Settings,
     /// Peer settings received
     peer_settings: Http3Settings,
+    /// Allocator
+    allocator: std.mem.Allocator,
     
-    pub fn init() Http3Connection {
+    pub fn init(allocator: std.mem.Allocator) Http3Connection {
         return Http3Connection{
             .quic_state = .idle,
             .settings = .{},
-            .streams = std.AutoHashMap(u64, *Http3Stream).init(std.heap.page_allocator),
+            .streams = std.AutoHashMap(u64, *Http3Stream).init(allocator),
             .control_stream_id = null,
-            .qpack_encoder = QPackEncoder.init(),
+            .qpack_encoder = QPackEncoder.init(allocator),
             .qpack_decoder = QPackDecoder.init(),
             .local_settings = .{},
             .peer_settings = .{},
+            .allocator = allocator,
         };
     }
     
     pub fn deinit(conn: *Http3Connection) void {
         var it = conn.streams.iterator();
         while (it.next()) |entry| {
-            entry.value_ptr.deinit();
-            std.heap.page_allocator.destroy(entry.value_ptr);
+            entry.value_ptr.*.deinit(conn.allocator);
+            conn.allocator.destroy(entry.value_ptr.*);
         }
         conn.streams.deinit();
+        conn.qpack_encoder.deinit();
     }
     
     /// Create a new bidirectional stream
@@ -257,123 +242,18 @@ pub const Http3Connection = struct {
         const stream_id_base: u64 = if (is_client) 0 else 1;
         
         // Find next available stream number
-        var max_stream_id: u64 = 0;
-        var it = conn.streams.iterator();
-        while (it.next()) |entry| {
-            if (entry.key_ptr.* > max_stream_id) {
-                max_stream_id = entry.key_ptr.*;
-            }
+        var next_stream_id: u64 = stream_id_base;
+        
+        while (conn.streams.contains(next_stream_id)) {
+            next_stream_id += 4;
         }
         
-        const stream_id = stream_id_base + (max_stream_id + 2) * 4;
-        const stream = try std.heap.page_allocator.create(Http3Stream);
-        stream.* = Http3Stream.init(stream_id, false);
+        const stream = try conn.allocator.create(Http3Stream);
+        stream.* = Http3Stream.init(next_stream_id, false);
         
-        try conn.streams.put(stream_id, stream);
+        try conn.streams.put(next_stream_id, stream);
         
         return stream;
-    }
-    
-    /// Create control stream
-    pub fn createControlStream(conn: *Http3Connection) !u64 {
-        const stream = try conn.createStream(true); // Control stream is client-initiated
-        conn.control_stream_id = stream.stream_id;
-        
-        // Send SETTINGS frame
-        try conn.sendSettings(stream);
-        
-        return stream.stream_id;
-    }
-    
-    /// Send SETTINGS frame on control stream
-    fn sendSettings(conn: *Http3Connection, stream: *Http3Stream) !void {
-        var frame = std.ArrayList(u8).init(std.heap.page_allocator);
-        defer frame.deinit();
-        
-        // SETTINGS frame type
-        try frame.append(@as(u8, @intFromEnum(@as(FrameType, @enumFromInt(6)))));
-        
-        // Encode settings
-        if (conn.local_settings.max_concurrent_streams) |val| {
-            try frame.append(@as(u8, 0x01)); // SETTINGS_MAX_CONCURRENT_STREAMS
-            try writeVarint(&frame, val);
-        }
-        if (conn.local_settings.max_field_section_size) |val| {
-            try frame.append(@as(u8, 0x06)); // SETTINGS_MAX_FIELD_SECTION_SIZE
-            try writeVarint(&frame, val);
-        }
-        
-        try stream.send_buffer.appendSlice(frame.items);
-    }
-    
-    /// Process incoming HTTP/3 frame
-    pub fn processFrame(conn: *Http3Connection, stream_id: u64, frame_type: FrameType, payload: []const u8) !void {
-        switch (frame_type) {
-            .settings => {
-                try conn.parseSettings(payload);
-            },
-            .headers => {
-                try conn.processHeaders(stream_id, payload);
-            },
-            .request, .response => {
-                try conn.processDataFrame(stream_id, payload);
-            },
-            .goaway => {
-                try conn.processGoaway(payload);
-            },
-            .ping => {
-                // Respond to ping
-            },
-            else => {
-                return error.UnsupportedFrame;
-            }
-        }
-    }
-    
-    fn parseSettings(conn: *Http3Connection, payload: []const u8) !void {
-        var pos: usize = 0;
-        while (pos < payload.len) {
-            if (pos >= payload.len) break;
-            
-            const setting_id = payload[pos];
-            pos += 1;
-            
-            const value = try readVarint(payload, &pos);
-            
-            switch (setting_id) {
-                0x01 => conn.peer_settings.max_concurrent_streams = value,
-                0x06 => conn.peer_settings.max_field_section_size = value,
-                else => {}, // Unknown setting, ignore
-            }
-        }
-    }
-    
-    fn processHeaders(conn: *Http3Connection, stream_id: u64, payload: []const u8) !void {
-        const stream = conn.streams.get(stream_id) orelse return error.StreamNotFound;
-        
-        // Decode QPACK headers
-        const headers = try conn.qpack_decoder.decode(payload);
-        
-        // Store headers in stream
-        try stream.recv_buffer.appendSlice(headers);
-        
-        stream.state = .open;
-    }
-    
-    fn processDataFrame(conn: *Http3Connection, stream_id: u64, payload: []const u8) !void {
-        const stream = conn.streams.get(stream_id) orelse return error.StreamNotFound;
-        
-        // Append data
-        try stream.recv_buffer.appendSlice(payload);
-    }
-    
-    fn processGoaway(conn: *Http3Connection, payload: []const u8) !void {
-        var pos: usize = 0;
-        _ = try readVarint(payload, &pos); // Stream ID
-        _ = try readVarint(payload, &pos); // Error code
-        
-        // Transition to closing state
-        conn.quic_state = .closing;
     }
     
     fn readVarint(buf: []const u8, pos: *usize) !u64 {
@@ -395,34 +275,12 @@ pub const Http3Connection = struct {
         while (pos.* < buf.len) {
             value = (value << 8) | buf[pos.*];
             pos.* += 1;
-            if (buf[pos - 1] & 0x80 == 0) break;
+            if (buf[pos.* - 1] & 0x80 == 0) break;
         }
         
         return value;
     }
     
-    fn writeVarint(buf: *std.ArrayList(u8), value: u64) !void {
-        if (value < 0x3F) {
-            try buf.append(@as(u8, @intCast(value)));
-        } else if (value < 0x3FFF) {
-            try buf.append(@as(u8, @intCast((value >> 8) | 0x40)));
-            try buf.append(@as(u8, @intCast(value & 0xFF)));
-        } else if (value < 0x3FFFFFFF) {
-            try buf.append(@as(u8, @intCast((value >> 24) | 0x80)));
-            try buf.append(@as(u8, @intCast((value >> 16) & 0xFF)));
-            try buf.append(@as(u8, @intCast((value >> 8) & 0xFF)));
-            try buf.append(@as(u8, @intCast(value & 0xFF)));
-        } else {
-            try buf.append(@as(u8, @intCast((value >> 56) | 0xC0)));
-            try buf.append(@as(u8, @intCast((value >> 48) & 0xFF)));
-            try buf.append(@as(u8, @intCast((value >> 40) & 0xFF)));
-            try buf.append(@as(u8, @intCast((value >> 32) & 0xFF)));
-            try buf.append(@as(u8, @intCast((value >> 24) & 0xFF)));
-            try buf.append(@as(u8, @intCast((value >> 16) & 0xFF)));
-            try buf.append(@as(u8, @intCast((value >> 8) & 0xFF)));
-            try buf.append(@as(u8, @intCast(value & 0xFF)));
-        }
-    }
 };
 
 /// QPACK encoder state
@@ -432,19 +290,29 @@ pub const QPackEncoder = struct {
     dynamic_table_len: usize,
     /// Static table reference
     static_table: [256]QPackEntry,
+    /// Allocator for dynamic table entries
+    allocator: std.mem.Allocator,
     
-    pub fn init() QPackEncoder {
+    pub fn init(allocator: std.mem.Allocator) QPackEncoder {
         return QPackEncoder{
             .dynamic_table = undefined,
             .dynamic_table_len = 0,
             .static_table = initStaticTable(),
+            .allocator = allocator,
         };
+    }
+    
+    pub fn deinit(encoder: *QPackEncoder) void {
+        for (encoder.dynamic_table[0..encoder.dynamic_table_len]) |entry| {
+            encoder.allocator.free(entry.name);
+            encoder.allocator.free(entry.value);
+        }
     }
     
     /// Encode headers using QPACK
     pub fn encode(encoder: *QPackEncoder, headers: []const [2][]const u8) ![]u8 {
-        var result = std.ArrayList(u8).init(std.heap.page_allocator);
-        defer result.deinit();
+        var result: std.ArrayListUnmanaged(u8) = .empty;
+        defer result.deinit(encoder.allocator);
         
         for (headers) |header| {
             const name = header[0];
@@ -471,20 +339,20 @@ pub const QPackEncoder = struct {
             
             if (found_idx) |idx| {
                 // Reference existing entry
-                try result.append(@as(u8, @intCast(idx / 256)));
-                try result.append(@as(u8, @intCast(idx % 256)));
+                try result.append(encoder.allocator, @as(u8, @intCast(idx / 256)));
+                try result.append(encoder.allocator, @as(u8, @intCast(idx % 256)));
             } else {
                 // Add to dynamic table and reference
                 if (encoder.dynamic_table_len < 256) {
                     encoder.dynamic_table[encoder.dynamic_table_len] = .{
-                        .name = name,
-                        .value = value,
+                        .name = try encoder.allocator.dupe(u8, name),
+                        .value = try encoder.allocator.dupe(u8, value),
                     };
                     const new_idx = 256 + encoder.dynamic_table_len;
                     encoder.dynamic_table_len += 1;
                     
-                    try result.append(@as(u8, @intCast(new_idx / 256)));
-                    try result.append(@as(u8, @intCast(new_idx % 256)));
+                    try result.append(encoder.allocator, @as(u8, @intCast(new_idx / 256)));
+                    try result.append(encoder.allocator, @as(u8, @intCast(new_idx % 256)));
                 }
             }
             
@@ -492,13 +360,13 @@ pub const QPackEncoder = struct {
             try encoder.encodeValue(&result, value);
         }
         
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(encoder.allocator);
     }
     
-    fn encodeValue(encoder: *QPackEncoder, buf: *std.ArrayList(u8), value: []const u8) !void {
+    fn encodeValue(encoder: *QPackEncoder, buf: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
         // Simple literal encoding
         for (value) |byte| {
-            try buf.append(byte);
+            try buf.append(encoder.allocator, byte);
         }
     }
     
@@ -539,38 +407,12 @@ pub const QPackDecoder = struct {
     }
     
     /// Decode QPACK encoded headers
-    pub fn decode(decoder: *QPackDecoder, encoded: []const u8) ![][2]u8 {
-        var headers = std.ArrayList([2]u8).init(std.heap.page_allocator);
-        defer {
-            for (headers.items) |h| {
-                std.heap.page_allocator.free(h[0]);
-                std.heap.page_allocator.free(h[1]);
-            }
-            headers.deinit();
-        }
-        
-        var pos: usize = 0;
-        while (pos < encoded.len) {
-            const first = encoded[pos];
-            pos += 1;
-            
-            const base = @as(u64, first) * 256;
-            if (base > 0) {
-                if (pos >= encoded.len) return error.BufferUnderflow;
-                const index = base + @as(u64, encoded[pos]);
-                pos += 1;
-                
-                // Look up in dynamic table
-                if (index >= 256 and index < 256 + decoder.dynamic_table_len) {
-                    const entry = decoder.dynamic_table[index - 256];
-                    const name_copy = try std.heap.page_allocator.dupe(u8, entry.name);
-                    const value_copy = try std.heap.page_allocator.dupe(u8, entry.value);
-                    try headers.append(.{ name_copy, value_copy });
-                }
-            }
-        }
-        
-        return headers.toOwnedSlice();
+    /// Minimal pass-through stub: returns a copy of the encoded bytes.
+    /// Full QPACK decode is Phase 3 work.
+    pub fn decode(decoder: *QPackDecoder, encoded: []const u8, allocator: std.mem.Allocator) ![]u8 {
+        _ = decoder;
+        const result = try allocator.dupe(u8, encoded);
+        return result;
     }
 };
 
@@ -584,94 +426,22 @@ pub const QPackEntry = struct {
 // Network Socket and I/O
 // ============================================================================
 
-/// UDP socket for QUIC
-pub const UdpSocket = struct {
-    /// Socket file descriptor
-    fd: posix.fd_t,
-    /// Local address
-    local_addr: net.Address,
-    /// Remote address
-    remote_addr: ?net.Address,
-    /// Receive buffer
-    recv_buf: [65536]u8,
-    /// Send buffer
-    send_buf: [65536]u8,
-    
-    pub fn create(port: u16) !UdpSocket {
-        const fd = try posix.socket(.{
-            .address_family = .ipv6,
-            .type = .datagram,
-            .protocol = .udp,
-        });
-        
-        // Enable QUIC-compatible options
-        try posix.setsockopt(fd, posix.IPPROTO_IPV6, posix.IPV6_V6ONLY, @as(u32, 0));
-        
-        // Set socket buffer sizes
-        try posix.setsockopt(fd, posix.SOL_SOCKET, posix.SO_RCVBUF, @as(u32, 2 * 1024 * 1024));
-        try posix.setsockopt(fd, posix.SOL_SOCKET, posix.SO_SNDBUF, @as(u32, 2 * 1024 * 1024));
-        
-        const addr = net.Address.init_ipv6(.{
-            .bytes = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-            .port = port,
-            .scope_id = 0,
-        });
-        
-        try posix.bind(fd, &addr.any);
-        
-        return UdpSocket{
-            .fd = fd,
-            .local_addr = addr,
-            .remote_addr = null,
-            .recv_buf = undefined,
-            .send_buf = undefined,
-        };
-    }
-    
-    /// Receive data from socket
-    pub fn recv(socket: *UdpSocket, buf: []u8) !struct { bytes: usize, addr: net.Address } {
-        var src_addr: net.Address = undefined;
-        const addr_len: *posix.socklen_t = @ptrFromInt(@intFromPtr(&src_addr));
-        
-        const bytes = posix.recvfrom(socket.fd, buf, 0, &src_addr);
-        
-        return .{ .bytes = bytes, .addr = src_addr };
-    }
-    
-    /// Send data to socket
-    pub fn send(socket: *UdpSocket, buf: []const u8, dest: net.Address) !usize {
-        const bytes = try posix.sendto(socket.fd, buf, 0, &dest);
-        return bytes;
-    }
-    
-    /// Close socket
-    pub fn close(socket: *UdpSocket) void {
-        posix.close(socket.fd);
-    }
-};
 
 /// Ring buffer interface for zero-copy network
 pub const NetworkRingInterface = struct {
     /// Outbound ring (to sandbox)
-    outbound: *anyopaque,
+    outbound: *sandbox.HardenedRingBuffer,
     /// Inbound ring (from sandbox)
-    inbound: *anyopaque,
-    /// Ring metadata pointer
-    metadata: *anyopaque,
+    inbound: *sandbox.HardenedRingBuffer,
     
     /// Write data to network ring (called from network layer)
     pub fn writeToRing(interface: *NetworkRingInterface, data: []const u8) !void {
-        _ = interface;
-        _ = data;
-        // Would write to the actual ring buffer
+        try interface.outbound.write(data);
     }
     
     /// Read data from network ring (called from sandbox)
     pub fn readFromRing(interface: *NetworkRingInterface, buf: []u8) !usize {
-        _ = interface;
-        _ = buf;
-        // Would read from the actual ring buffer
-        return 0;
+        return try interface.inbound.read(buf);
     }
 };
 
@@ -683,15 +453,14 @@ test "ConnectionId operations" {
     const id = ConnectionId.fromSlice("test12345678");
     try std.testing.expect(id.isValid());
     
-    const invalid = ConnectionId{ .bytes = undefined };
-    @memset(&invalid.bytes, 0);
+    var invalid = ConnectionId{ .bytes = [_]u8{0} ** 18, .len = 0 };
     try std.testing.expect(!invalid.isValid());
 }
 
 test "PacketHeader serialization" {
-    var buf = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer buf.deinit();
-    
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+
     const header = PacketHeader{
         .packet_type = .initial,
         .dest_conn_id = ConnectionId.fromSlice("conn123456"),
@@ -700,13 +469,13 @@ test "PacketHeader serialization" {
         .key_phase = false,
         .reserved = 0,
     };
-    
-    try header.serialize(&buf);
+
+    try header.serialize(std.testing.allocator, &buf);
     try std.testing.expect(buf.items.len > 0);
 }
 
 test "Http3Connection stream management" {
-    var conn = Http3Connection.init();
+    var conn = Http3Connection.init(std.testing.allocator);
     defer conn.deinit();
     
     const stream1 = try conn.createStream(true);
@@ -714,13 +483,11 @@ test "Http3Connection stream management" {
     
     const stream2 = try conn.createStream(true);
     try std.testing.expect(stream2.stream_id == 4); // Second client stream
-    
-    _ = stream1;
-    _ = stream2;
 }
 
 test "QPACK encoding" {
-    var encoder = QPackEncoder.init();
+    var encoder = QPackEncoder.init(std.testing.allocator);
+    defer encoder.deinit();
     
     const headers = [_][2][]const u8{
         .{ ":method", "GET" },
@@ -731,5 +498,5 @@ test "QPACK encoding" {
     const encoded = try encoder.encode(&headers);
     try std.testing.expect(encoded.len > 0);
     
-    std.heap.page_allocator.free(encoded);
+    std.testing.allocator.free(encoded);
 }

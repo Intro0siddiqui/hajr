@@ -9,15 +9,18 @@ The Hajr sandbox subsystem has successfully transitioned through Phase 2. The co
 - **Arena Layout Manager (`src/hajr/memory.zig`)**: 
   - Implemented deterministic segmentation for Inbound Ring, Outbound Ring, and JS Heap.
   - Refactored to use `std.heap.page_allocator.alignedAlloc` instead of POSIX `mmap`, making the memory management OS-agnostic.
-- **SpiderMonkey FFI (`src/hajr/sm_bindings.zig`)**: 
+- **SpiderMonkey FFI (`src/hajr/sm_bindings.zig`)**:
   - Created C ABI bindings for zero-copy ring reads/writes.
   - Correctly maps contiguous ring memory into SpiderMonkey's External ArrayBuffer.
 - **Tier 1 Event Router (`src/hajr/router.zig`)**: 
   - Built a lock-free polling mechanism with < 5ns overhead target.
   - Integrated the **Poison Protocol**: Rogue sandboxes (poisoned via JIT escape or sequence anomaly) are instantly unmapped and killed.
 
-### Zig 0.16.0 Migration & Modernization
-- **Compiler Compliance**: 
+**Project-Wide Rules (Mandatory):**
+1. **Zig 0.16 Standards:** Strict usage of `std.ArrayListUnmanaged(T)`, explicit `Allocator` passing for memory management, and lowercase `std.posix` constants.
+2. **Hardware Primitive Rules (HAL):** Always use the `hw` module for all hardware primitives (memory protection, compartments). Raw syscalls for hardware access are forbidden. If a primitive is missing, extend the HAL.
+
+### Zig 0.16.0 Migration & Modernization- **Compiler Compliance**: 
   - Updated `callconv(.c)` syntax.
   - Resolved `@ptrFromInt` ambiguity by providing explicit result types.
   - Transitioned `std.atomic` patterns to the new `atomic.Value(T)` API.

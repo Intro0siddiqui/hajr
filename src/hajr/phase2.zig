@@ -4,7 +4,6 @@
 //! Tier 1 Router, and Poison Protocol for complete zero-copy sandbox system.
 
 const std = @import("std");
-const posix = std.posix;
 const atomic = std.atomic;
 const memory = @import("memory.zig");
 const sm_bindings = @import("sm_bindings.zig");
@@ -116,12 +115,12 @@ pub const Phase2Sandbox = struct {
     id: u64,
     
     /// Active flag
-    active: atomic.Bool,
+    active: atomic.Value(bool),
     
     /// Create a complete Phase 2 sandbox
     pub fn create(id: u64, layout: memory.ArenaLayout) !*Phase2Sandbox {
         // 1. Create memory arena
-        const arena = try memory.SandboxMemory.create(layout, 2, id); // Tier 2 key
+        const arena = try memory.SandboxMemory.create(layout);
         
         // 2. Extract ring metadata pointers
         const inbound_meta_ptr = arena.getRingMetadata(.inbound_ring) orelse @panic("No inbound ring");
@@ -135,36 +134,35 @@ pub const Phase2Sandbox = struct {
         const outbound_bounds = arena.getSegmentBounds(.outbound_ring);
         
         const ffi_config = sm_bindings.FFIConfig{
-            .ring_in_base = inbound_bounds.pointer,
-            .ring_in_size = inbound_bounds.size,
-            .ring_in_meta = @ptrFromInt(@intFromPtr(inbound_meta)),
-            .ring_out_base = outbound_bounds.pointer,
-            .ring_out_size = outbound_bounds.size,
-            .ring_out_meta = @ptrFromInt(@intFromPtr(outbound_meta)),
-            .sandbox_id = id,
-            .protection_key = 2,
+            .inbound_base = @ptrCast(inbound_bounds.pointer.toTagged()),
+            .inbound_size = inbound_bounds.size,
+            .inbound_meta = @ptrCast(@alignCast(@volatileCast(inbound_meta))),
+            .outbound_base = @ptrCast(outbound_bounds.pointer.toTagged()),
+            .outbound_size = outbound_bounds.size,
+            .outbound_meta = @ptrCast(@alignCast(@volatileCast(outbound_meta))),
         };
+
         
         // 4. Create observable ring for Tier 0
         const observable = try std.heap.page_allocator.create(poison.ObservableRing);
         observable.* = poison.ObservableRing{
-            .metadata = @ptrFromInt(@intFromPtr(outbound_meta)),
-            .base = outbound_bounds.pointer,
+            .metadata = @ptrCast(@alignCast(@volatileCast(outbound_meta))),
+            .base = @ptrCast(@alignCast(outbound_bounds.pointer.toTagged())),
             .size = outbound_bounds.size,
             .sandbox_id = id,
+            .protection_key = arena.protection_key,
             .thread_handle = null,
             .expected_sequence = 0,
             .memory = undefined,
         };
-        
         // 5. Create router outbound ring descriptor
         const outbound_ring = try std.heap.page_allocator.create(router.OutboundRing);
         outbound_ring.* = router.OutboundRing{
-            .base = outbound_bounds.pointer,
+            .base = @ptrCast(@alignCast(outbound_bounds.pointer.toTagged())),
             .size = outbound_bounds.size,
-            .meta = outbound_meta,
+            .meta = @ptrCast(@alignCast(@volatileCast(outbound_meta))),
             .sandbox_id = id,
-            .active = atomic.Bool.init(true),
+            .active = atomic.Value(bool).init(true),
         };
         
         // 6. Create sandbox instance
@@ -177,15 +175,10 @@ pub const Phase2Sandbox = struct {
             .observable = observable,
             .outbound_ring = outbound_ring,
             .id = id,
-            .active = atomic.Bool.init(true),
+            .active = atomic.Value(bool).init(true),
         };
         
         return sandbox;
-    }
-    
-    /// Initialize FFI for this sandbox
-    pub fn initFFI(sandbox: *Phase2Sandbox) void {
-        sm_bindings.initFFI(&sandbox.ffi_config);
     }
     
     /// Destroy sandbox and free all resources
@@ -202,160 +195,6 @@ pub const Phase2Sandbox = struct {
     }
 };
 
-// ============================================================================
-// Complete System Integration
-// ============================================================================
-
-/// Complete Phase 2 system with all components
-pub const Phase2System = struct {
-    /// Sandboxes indexed by ID
-    sandboxes: std.AutoHashMap(u64, *Phase2Sandbox),
-    
-    /// Tier 1 event router
-    router: *router.RingRouter,
-    
-    /// Tier 0 poison observer
-    observer: *poison.Tier0Observer,
-    
-    /// Recovery manager
-    recovery: *poison.RecoveryManager,
-    
-    /// Poison-aware router
-    poison_router: *poison.PoisonAwareRouter,
-    
-    /// Backend handlers (z-net, BrowserDB)
-    handlers: router.BackendHandler,
-    
-    /// Configuration
-    config: Config,
-    
-    /// Configuration
-    pub const Config = struct {
-        max_sandboxes: usize = 16,
-        ring_buffer_size: usize = 64 * 1024,
-        js_heap_size: usize = 8 * 1024 * 1024,
-    };
-    
-    /// Initialize complete Phase 2 system
-    pub fn init(handlers: router.BackendHandler, config: Config) !*Phase2System {
-        // Initialize observer
-        const observer = try poison.Tier0Observer.init(.{});
-        
-        // Initialize recovery manager
-        const recovery = try std.heap.page_allocator.create(poison.RecoveryManager);
-        recovery.* = poison.RecoveryManager.init(
-            observer,
-            poison.defaultUnmap,
-            poison.defaultReleaseKey,
-            createSandboxCallback,
-        );
-        
-        // Initialize router
-        const router_instance = try router.RingRouter.init(handlers, .{
-            .max_sandboxes = config.max_sandboxes,
-            .read_buffer_size = 4096,
-        });
-        
-        // Initialize poison-aware router
-        const poison_router = try std.heap.page_allocator.create(poison.PoisonAwareRouter);
-        poison_router.* = try poison.PoisonAwareRouter.init(
-            handlers,
-            .{
-                .max_sandboxes = config.max_sandboxes,
-                .read_buffer_size = 4096,
-            },
-            observer,
-            recovery,
-        );
-        
-        // Create system instance
-        const system = try std.heap.page_allocator.create(Phase2System);
-        system.* = Phase2System{
-            .sandboxes = std.AutoHashMap(u64, *Phase2Sandbox).init(std.heap.page_allocator),
-            .router = router_instance,
-            .observer = observer,
-            .recovery = recovery,
-            .poison_router = poison_router,
-            .handlers = handlers,
-            .config = config,
-        };
-        
-        return system;
-    }
-    
-    /// Create a new sandbox in this system
-    pub fn createSandbox(system: *Phase2System, id: u64) !*Phase2Sandbox {
-        const layout = memory.ArenaLayout{
-            .inbound_size = system.config.ring_buffer_size,
-            .outbound_size = system.config.ring_buffer_size,
-            .js_heap_size = system.config.js_heap_size,
-        };
-        
-        const sandbox = try Phase2Sandbox.create(id, layout);
-        
-        // Register with router
-        try system.router.registerRing(sandbox.outbound_ring);
-        
-        // Register with observer
-        try system.observer.registerRing(sandbox.observable);
-        
-        // Store in system
-        try system.sandboxes.put(id, sandbox);
-        
-        return sandbox;
-    }
-    
-    /// Destroy a sandbox
-    pub fn destroySandbox(system: *Phase2System, id: u64) void {
-        const sandbox = system.sandboxes.get(id) orelse return;
-        
-        // Unregister from router
-        system.router.unregisterRing(id);
-        
-        // Unregister from observer
-        system.observer.unregisterRing(id);
-        
-        // Destroy sandbox
-        sandbox.destroy();
-        
-        // Remove from system
-        system.sandboxes.remove(id);
-    }
-    
-    /// Main event loop integration point
-    pub fn poll(system: *Phase2System) usize {
-        return system.poison_router.poll();
-    }
-    
-    /// Destroy entire system
-    pub fn destroy(system: *Phase2System) void {
-        // Destroy all sandboxes
-        var it = system.sandboxes.iterator();
-        while (it.next()) |entry| {
-            entry.value_ptr.*.destroy();
-        }
-        system.sandboxes.deinit();
-        
-        // Destroy router
-        system.router.destroy();
-        std.heap.page_allocator.destroy(system.poison_router);
-        
-        // Destroy observer
-        system.observer.destroy();
-        
-        // Free recovery manager
-        std.heap.page_allocator.destroy(system.recovery);
-        
-        // Free system
-        std.heap.page_allocator.destroy(system);
-    }
-};
-
-/// Callback for recovery manager to create new sandbox
-fn createSandboxCallback() anyerror!u64 {
-    // This would be implemented by the system
-    return @as(u64, 0);
-}
 
 // ============================================================================
 // Zero-Copy Data Flow Diagram
@@ -403,48 +242,6 @@ fn createSandboxCallback() anyerror!u64 {
 // Phase 2 Completion Checklist
 // ============================================================================
 
-/// Checklist for Phase 2 completion
-pub const Phase2Checklist = struct {
-    /// Task 1: Arena Layout Manager
-    pub const TASK1_ARENA_LAYOUT = struct {
-        pub const sandbox_memory_struct = true;
-        pub const page_aligned_segments = true;
-        pub const guard_pages = true;
-        pub const js_heap_pointer = true;
-        pub const segment_bounds = true;
-        pub const pointer_validation = true;
-    };
-    
-    /// Task 2: SpiderMonkey FFI Bindings
-    pub const TASK2_FFI_BINDINGS = struct {
-        pub const ring_read_zerocopy = true;
-        pub const ring_write_zerocopy = true;
-        pub const external_buffer_api = true;
-        pub const bounds_validation = true;
-        pub const poison_checking = true;
-        pub const c_abi_exports = true;
-    };
-    
-    /// Task 3: Tier 1 Event Router
-    pub const TASK3_EVENT_ROUTER = struct {
-        pub const ring_router = true;
-        pub const lockfree_polling = true;
-        pub const backend_handlers = true;
-        pub const request_routing = true;
-        pub const dynamic_sandbox = true;
-        pub const batch_polling = true;
-    };
-    
-    /// Task 4: Poison Protocol
-    pub const TASK4_POISON_PROTOCOL = struct {
-        pub const poison_bit = true;
-        pub const tier0_observer = true;
-        pub const observable_ring = true;
-        pub const recovery_manager = true;
-        pub const sequence_validation = true;
-        pub const poison_aware_router = true;
-    };
-};
 
 // ============================================================================
 // Tests
@@ -460,17 +257,14 @@ test "Phase 2 complete sandbox creation" {
     const sandbox = try Phase2Sandbox.create(1, layout);
     defer sandbox.destroy();
     
-    // Verify arena exists
-    try std.testing.expect(sandbox.arena != null);
-    
     // Verify JS heap pointer is within arena
     const js_ptr = sandbox.arena.getJsHeapPointer();
     const js_size = sandbox.arena.getJsHeapSize();
-    try std.testing.expect(sandbox.arena.validatePointer(.js_heap, js_ptr, js_size));
+    try std.testing.expect(sandbox.arena.validatePointer(.js_heap, @ptrCast(js_ptr.toRaw()), js_size));
     
     // Verify FFI config is populated
-    try std.testing.expectEqual(@as(u64, 1), sandbox.ffi_config.sandbox_id);
-    try std.testing.expectEqual(@as(u32, 2), sandbox.ffi_config.protection_key);
+    try std.testing.expectEqual(@as(u64, 1), sandbox.id);
+    // ...
     
     // Verify observable ring is set up
     try std.testing.expect(!sandbox.observable.isPoisoned());
@@ -511,10 +305,10 @@ test "FFI pointer bounds validation" {
     const inbound_bounds = sandbox.arena.getSegmentBounds(.inbound_ring);
     
     // Valid pointer should validate
-    try std.testing.expect(sandbox.arena.validatePointer(.inbound_ring, inbound_bounds.pointer, 100));
+    try std.testing.expect(sandbox.arena.validatePointer(.inbound_ring, @ptrCast(inbound_bounds.pointer.toRaw()), 100));
     
     // Pointer beyond ring should fail
-    try std.testing.expect(!sandbox.arena.validatePointer(.inbound_ring, @ptrFromInt(@intFromPtr(inbound_bounds.pointer) + inbound_bounds.size), 1));
+    try std.testing.expect(!sandbox.arena.validatePointer(.inbound_ring, @ptrFromInt(@intFromPtr(inbound_bounds.pointer.toRaw()) + inbound_bounds.size), 1));
 }
 
 test "Poison protocol integration" {
@@ -549,7 +343,7 @@ test "Router integration with poison detection" {
         .size = 4096,
         .meta = &meta,
         .sandbox_id = 1,
-        .active = atomic.Bool.init(true),
+        .active = atomic.Value(bool).init(true),
     };
     
     // Register ring

@@ -8,6 +8,10 @@
 - Zero-copy data transfers via lock-free ring buffers between security tiers.
 - "Crash-only" recovery semantics (the Poison Protocol): ANY fault or anomaly terminates the sandbox instantly.
 
+**Project-Wide Rules (Mandatory):**
+1. **Zig 0.16 Standards:** Strict usage of `std.ArrayListUnmanaged(T)`, explicit `Allocator` passing for memory management, and lowercase `std.posix` constants.
+2. **Hardware Primitive Rules (HAL):** Always use the `hw` module for all hardware primitives (memory protection, compartments). Raw syscalls for hardware access are forbidden. If a primitive is missing, extend the HAL.
+
 **Tech Stack:** Zig 0.16.0. Strict C ABI bindings for FFI.
 
 ## 2. Completed Milestones
@@ -49,7 +53,10 @@ Do **not** move to full Phase 3 "glue code" integrations until Phase 2 is valida
 - **Compiler Target:** Zig `0.16.0`
 - **Known Zig 0.16 Caveats Handled:**
   - `callconv(.c)` is strictly lowercased.
-  - `@ptrFromInt` requires strictly defined LHS pointers.
-  - `std.atomic.Value` must not be pointer-to-volatile.
-  - Do not use `addStaticLibrary` on `Build` directly, use `b.addStaticLibrary(.{...})` but `build.zig` must map `.root_source_file = b.path(...)` and standard targets.
+  - `@ptrFromInt` and `@fieldParentPtr` require strictly defined LHS pointers with `@as`.
+  - `std.atomic.Value` replaces the old atomic primitives; standalone fences are replaced by operation-level memory ordering (`.acquire`, `.release`).
+  - `std.posix` constants are now lowercase (e.g., `posix.O.rdwr`).
+  - `std.os.linux.statx` is the preferred path for high-performance file metadata over the deprecated `fstat`.
+  - CPUID detection moved to `std.arch.x86`.
+  - All `std.ArrayList` usage migrated to `ArrayListUnmanaged` to support the explicit allocator passing mandate.
 - **Git Context:** The initial template was unzipped from `package.zip`. All files were moved to the project root and the `build.zig` has been refactored to compile the test suite. All tests currently pass.

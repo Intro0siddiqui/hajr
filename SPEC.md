@@ -119,6 +119,10 @@ Lock-free ring buffers with sequence validation provide inter-sandbox communicat
 - **Standard Library**: std.io, std.posix, std.atomic for I/O and synchronization
 - **Build System**: Zig's built-in build system with cross-compilation support
 
+**Project-Wide Rules (Mandatory):**
+1. **Zig 0.16 Standards:** Strict usage of `std.ArrayListUnmanaged(T)`, explicit `Allocator` passing for memory management, and lowercase `std.posix` constants.
+2. **Hardware Primitive Rules (HAL):** Always use the `hw` module for all hardware primitives (memory protection, compartments). Raw syscalls for hardware access are forbidden. If a primitive is missing, extend the HAL.
+
 ### Hardware Protection
 - **Intel MPK**: WRPKRU instruction for setting protection key rights
 - **ARM MTE**: Memory tagging for bounds checking

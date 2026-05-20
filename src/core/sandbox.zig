@@ -9,6 +9,7 @@
 const std = @import("std");
 const posix = std.posix;
 const builtin = @import("builtin");
+const hw = @import("../hw/mod.zig");
 
 // ============================================================================
 // Architecture Overview
@@ -47,17 +48,24 @@ pub const HardwareProtection = struct {
     };
     
     /// Detect which hardware protection mechanism is available
-    pub fn detect() Mechanism {
+    pub fn detect() !Mechanism {
         switch (builtin.cpu.arch) {
             .x86_64, .x86 => {
-                // Check for Intel PKU (Protection Keys for Userspace)
-                // This would be detected at runtime via CPUID
-                return .intel_mpk;
+                // Check CPUID for MPK support (Leaf 7, EBX bits 3 & 4)
+                // Bit 3: PKU (Protection Keys for User-mode pages)
+                // Bit 4: OSPKE (OS Protection Keys Enable)
+                const cpuid = try std.arch.x86.cpuid(7, 0);
+                const has_pku = (cpuid.ebx & (1 << 3)) != 0;
+                const has_ospke = (cpuid.ebx & (1 << 4)) != 0;
+                
+                if (has_pku and has_ospke) {
+                    if (hw.compartment.global_allocator.detectMpk()) {
+                        return .intel_mpk;
+                    }
+                }
+                return .software_fallback;
             },
-            .aarch64 => {
-                // Check for ARM MTE support
-                return .arm_mte;
-            },
+            .aarch64 => return .arm_mte,
             else => return .software_fallback,
         }
     }
@@ -66,59 +74,7 @@ pub const HardwareProtection = struct {
     pub const Key = struct {
         value: u32,
         tier: u8,
-        
-        pub fn isValid(key: Key) bool {
-            return key.value != 0xFFFFFFFF;
-        }
     };
-};
-
-/// Memory protection key manager for Intel MPK
-pub const MPKManager = struct {
-    /// Maximum number of MPK keys available
-    pub const MAX_KEYS: u32 = 16;
-    
-    /// Reserved keys for system use
-    pub const RESERVED_KEYS: u32 = 4;
-    
-    /// Track which keys are allocated
-    allocated: [MAX_KEYS]bool,
-    
-    pub fn init() MPKManager {
-        var manager = MPKManager{ .allocated = undefined };
-        
-        // Mark reserved keys as allocated
-        for (0..RESERVED_KEYS) |i| {
-            manager.allocated[i] = true;
-        }
-        // Mark remaining keys as available
-        for (RESERVED_KEYS..MAX_KEYS) |i| {
-            manager.allocated[i] = false;
-        }
-        
-        return manager;
-    }
-    
-    /// Allocate a new MPK key for a sandbox tier
-    pub fn allocateKey(manager: *MPKManager) ?HardwareProtection.Key {
-        for (RESERVED_KEYS..MAX_KEYS) |i| {
-            if (!manager.allocated[i]) {
-                manager.allocated[i] = true;
-                return HardwareProtection.Key{
-                    .value = @as(u32, @intCast(i)),
-                    .tier = @intCast(i - RESERVED_KEYS),
-                };
-            }
-        }
-        return null;
-    }
-    
-    /// Release a key back to the pool
-    pub fn releaseKey(manager: *MPKManager, key: HardwareProtection.Key) void {
-        if (key.value >= RESERVED_KEYS and key.value < MAX_KEYS) {
-            manager.allocated[key.value] = false;
-        }
-    }
 };
 
 // ============================================================================
@@ -207,18 +163,18 @@ pub const HardenedRingBuffer = struct {
         const total_size = RingConfig.METADATA_SIZE + actual_size;
         
         // Create anonymous memory mapping
-        const prot: posix.PROT = switch (tier) {
-            .trusted => .{ .READ = true, .WRITE = true },
-            .untrusted => .{ .READ = true, .WRITE = true },
-            .isolated => .{ .READ = true },
-            .root => .{ .READ = true, .WRITE = true },
+        const prot = switch (tier) {
+            .trusted => posix.PROT{ .READ = true, .WRITE = true },
+            .untrusted => posix.PROT{ .READ = true, .WRITE = true },
+            .isolated => posix.PROT{ .READ = true },
+            .root => posix.PROT{ .READ = true, .WRITE = true },
         };
         
         const fd = try posix.mmap(
             null,
             total_size,
             prot,
-            .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+            posix.MAP{ .TYPE = .PRIVATE, .ANONYMOUS = true },
             -1,
             0,
         );
@@ -238,63 +194,6 @@ pub const HardenedRingBuffer = struct {
             .size = actual_size,
             .protection_key = protection_key,
             .fd = null,
-            .flags = 0,
-        };
-    }
-    
-    /// Create a ring buffer from a file (for persistence/replication)
-    pub fn fromFile(
-        path: []const u8,
-        size: usize,
-        protection_key: HardwareProtection.Key,
-        tier: SandboxTier,
-    ) !HardenedRingBuffer {
-        const actual_size = @min(size, RingConfig.MAX_SIZE);
-        const total_size = RingConfig.METADATA_SIZE + actual_size;
-        
-        // Open or create file
-        const fd = try posix.openat(
-            posix.AT.FDCWD,
-            path,
-            .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true },
-            0o600,
-        );
-        defer _ = posix.system.close(fd);
-        
-        // Extend file to required size
-        try posix.ftruncate(fd, @intCast(total_size));
-        
-        // Memory map the file
-        const prot: posix.PROT = switch (tier) {
-            .trusted => .{ .READ = true, .WRITE = true },
-            .untrusted => .{ .READ = true, .WRITE = true },
-            .isolated => .{ .READ = true },
-            .root => .{ .READ = true, .WRITE = true },
-        };
-        
-        const mapped = try posix.mmap(
-            null,
-            total_size,
-            prot,
-            .{ .TYPE = .SHARED },
-            fd,
-            0,
-        );
-        
-        const metadata = @as(*RingMetadata, @ptrCast(@alignCast(mapped.ptr)));
-        metadata.write_index.store(0, .release);
-        metadata.read_index.store(0, .release);
-        metadata.sequence.store(0, .release);
-        metadata.poison_bit.store(false, .release);
-        metadata.poison_cause.store(0, .release);
-        
-        return HardenedRingBuffer{
-            .memory = mapped,
-            .metadata = metadata,
-            .data = @ptrFromInt(@intFromPtr(mapped.ptr) + RingConfig.METADATA_SIZE),
-            .size = actual_size,
-            .protection_key = protection_key,
-            .fd = fd,
             .flags = 0,
         };
     }
@@ -365,23 +264,11 @@ pub const HardenedRingBuffer = struct {
         return to_read;
     }
     
-    /// Get current available bytes for reading
-    pub fn available(ring: *const HardenedRingBuffer) usize {
-        const write_idx = ring.metadata.write_index.load(.acquire);
-        const read_idx = ring.metadata.read_index.load(.acquire);
-        return @as(usize, @intCast(write_idx -% read_idx));
-    }
-    
-    /// Validate sequence integrity
-    pub fn validateSequence(ring: *const HardenedRingBuffer, expected: u64) bool {
-        return ring.metadata.sequence.load(.acquire) >= expected;
-    }
-    
     /// Destroy the ring buffer and release resources
     pub fn destroy(ring: *HardenedRingBuffer) void {
         posix.munmap(ring.memory);
         if (ring.fd) |fd| {
-            _ = posix.system.close(fd);
+            hw.posix_io.fileClose(fd);
         }
     }
 };
@@ -400,15 +287,13 @@ pub const SandboxTier = enum(u8) {
     untrusted = 2,
     /// Tier 3: Isolated external processes
     isolated = 3,
-    
-    /// Get the hardware protection key for this tier
+
     pub fn getProtectionKey(tier: SandboxTier) u32 {
-        return switch (tier) {
-            .root => 0,    // Key 0 is always accessible
-            .trusted => 1,  // Key 1 for Tier 1
-            .untrusted => 2, // Key 2 for Tier 2
-            .isolated => 3,   // Key 3 for Tier 3
-        };
+        if (tier == .root) return 0;
+        
+        // Attempt to allocate/lookup a key dynamically
+        const token = hw.compartment.global_allocator.alloc() catch return @intFromEnum(tier);
+        return token.id;
     }
 };
 
@@ -418,21 +303,6 @@ pub const AccessPermission = struct {
     write: bool,
     execute: bool,
     
-    pub fn none() AccessPermission {
-        return .{ .read = false, .write = false, .execute = false };
-    }
-    
-    pub fn readOnly() AccessPermission {
-        return .{ .read = true, .write = false, .execute = false };
-    }
-    
-    pub fn readWrite() AccessPermission {
-        return .{ .read = true, .write = true, .execute = false };
-    }
-    
-    pub fn full() AccessPermission {
-        return .{ .read = true, .write = true, .execute = true };
-    }
 };
 
 // ============================================================================
@@ -551,8 +421,8 @@ pub const Arena = struct {
         const memory = try posix.mmap(
             null,
             size,
-            .{ .READ = true, .WRITE = true },
-            .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
+            posix.PROT.read | posix.PROT.write,
+            posix.MAP.private | posix.MAP.anonymous,
             -1,
             0,
         );
@@ -566,14 +436,9 @@ pub const Arena = struct {
     
     /// Apply hardware protection to this arena
     pub fn protect(arena: *Arena, permission: AccessPermission) !void {
-        // On systems without MPK/MTE, we just set normal memory protection
-        var prot: posix.PROT = .{};
-        if (permission.read) prot.READ = true;
-        if (permission.write) prot.WRITE = true;
-        if (permission.execute) prot.EXEC = true;
-        
-        // Apply memory protection (this would use pkey_mprotect on MPK systems)
-        try posix.mprotect(arena.memory, prot);
+        const perm: hw.Permission = if (!permission.read) .none else if (permission.write) .read_write else .read_only;
+        try hw.applyProtectionToRegion(arena.memory.ptr, arena.size, arena.protection_key.value);
+        hw.setKeyPermission(arena.protection_key.value, perm);
     }
     
     /// Destroy the arena
@@ -635,11 +500,7 @@ pub const Message = struct {
         payload: []const u8,
         sequence: u64,
     ) Message {
-        // In Zig 0.16, we use std.posix.system.clock_gettime for high-precision ns
-        var ts: posix.system.timespec = undefined;
-        _ = posix.system.clock_gettime(posix.system.CLOCK.MONOTONIC, &ts);
-        
-        const timestamp = @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+        const timestamp = hw.posix_io.monotonicTimestamp();
         const length = @as(u32, @intCast(@sizeOf(MessageHeader) + payload.len));
         
         return Message{
@@ -696,9 +557,6 @@ pub const SandboxManager = struct {
     /// Ring buffer pool for IPC (pointers to avoid invalidation)
     rings: std.ArrayListUnmanaged(*HardenedRingBuffer),
     
-    /// Hardware protection key manager
-    key_manager: MPKManager,
-    
     /// Global sequence counter
     sequence: u64,
 
@@ -720,7 +578,6 @@ pub const SandboxManager = struct {
         return SandboxManager{
             .sandboxes = std.AutoHashMap(u64, *SandboxContext).init(allocator),
             .rings = .empty,
-            .key_manager = MPKManager.init(),
             .sequence = 0,
             .allocator = allocator,
             .config = config,
@@ -841,143 +698,6 @@ pub const SandboxManager = struct {
     }
 };
 
-// ============================================================================
-// Hardware Enforcement (x86-64 MPK Intrinsics)
-// ============================================================================
-
-/// Intel MPK intrinsics for hardware-enforced memory protection
-pub const MPK = struct {
-    /// Write Protection Key Rights (WRPKRU)
-    /// 
-    /// This instruction modifies the protection key rights for the current thread.
-    /// When a key's access is removed, any memory access through that key triggers #GP (general protection fault).
-    pub const wrpkru = struct {
-        /// Low-level WRPKRU instruction wrapper
-        pub fn writePKRU(value: u32) void {
-            if (builtin.cpu.arch == .x86_64) {
-                asm volatile (
-                    \\xorl %%ecx, %%ecx
-                    \\xorl %%edx, %%edx
-                    \\wrpkru
-                    :
-                    : [val] "{eax}" (value)
-                    : .{ .ecx = true, .edx = true, .memory = true }
-                );
-            }
-        }
-
-        /// Low-level RDPKRU instruction wrapper
-        pub fn readPKRU() u32 {
-            if (builtin.cpu.arch == .x86_64) {
-                var value: u32 = undefined;
-                asm volatile (
-                    \\xorl %%ecx, %%ecx
-                    \\rdpkru
-                    : [ret] "={eax}" (value)
-                    :
-                    : .{ .ecx = true, .edx = true }
-                );
-                return value;
-            }
-            return 0;
-        }
-
-        /// Disable all access for a key (AD=1, WD=1)
-        pub fn disableAccess(key: u32) void {
-            if (builtin.cpu.arch == .x86_64) {
-                var pkru = readPKRU();
-                const shift: u5 = @intCast(key * 2);
-                pkru |= (@as(u32, 0b11) << shift);
-                writePKRU(pkru);
-            }
-        }
-        
-        /// Enable read-only access for a key (AD=0, WD=1)
-        pub fn enableReadOnly(key: u32) void {
-            if (builtin.cpu.arch == .x86_64) {
-                var pkru = readPKRU();
-                const shift: u5 = @intCast(key * 2);
-                pkru &= ~(@as(u32, 0b01) << shift); // Clear AD
-                pkru |= (@as(u32, 0b10) << shift);  // Set WD
-                writePKRU(pkru);
-            }
-        }
-        
-        /// Enable full access for a key (AD=0, WD=0)
-        pub fn enableFullAccess(key: u32) void {
-            if (builtin.cpu.arch == .x86_64) {
-                var pkru = readPKRU();
-                const shift: u5 = @intCast(key * 2);
-                pkru &= ~(@as(u32, 0b11) << shift); // Clear AD and WD
-                writePKRU(pkru);
-            }
-        }
-        
-        /// Reset all keys to default state (Allow all)
-        pub fn resetAll() void {
-            writePKRU(0);
-        }
-    };
-};
-
-// ============================================================================
-// C ABI Bridge for External Components
-// ============================================================================
-
-/// C ABI bridge for integrating external components (SpiderMonkey, Servo)
-pub const CAbiBridge = struct {
-    /// External function type for engine initialization
-    pub const InitFn = *const fn (config: *const EngineConfig) callconv(.C) c_int;
-    
-    /// External function type for engine execution
-    pub const ExecuteFn = *const fn (context: *anyopaque, input: [*]const u8, input_len: usize) callconv(.C) c_int;
-    
-    /// External function type for engine shutdown
-    pub const ShutdownFn = *const fn (context: *anyopaque) callconv(.C) void;
-    
-    /// Engine configuration passed through C ABI
-    pub const EngineConfig = extern struct {
-        /// Ring buffer pointers
-        ring_in: [*]u8,
-        ring_out: [*]u8,
-        ring_size: usize,
-        
-        /// Protection key for rings
-        protection_key: u32,
-        
-        /// Sandbox ID
-        sandbox_id: u64,
-        
-        /// Reserved for future use
-        reserved: [32]u8,
-    };
-    
-    /// Bind to an external engine library
-    pub fn bindEngine(path: []const u8, init_sym: []const u8) !*anyopaque {
-        // This would load a shared library and resolve symbols
-        // For now, return null as placeholder
-        _ = path;
-        _ = init_sym;
-        return null;
-    }
-    
-    /// Initialize an external engine with sandbox configuration
-    pub fn initEngine(engine: *anyopaque, config: *const EngineConfig) !void {
-        // Call the engine's init function through C ABI
-        _ = engine;
-        _ = config;
-        // Would call: init_fn(config)
-    }
-    
-    /// Execute code in an external engine
-    pub fn executeEngine(engine: *anyopaque, context: *anyopaque, input: []const u8) !void {
-        // Call the engine's execute function through C ABI
-        _ = engine;
-        _ = context;
-        _ = input;
-        // Would call: execute_fn(context, input.ptr, input.len)
-    }
-};
 
 // ============================================================================
 // Tests and Examples

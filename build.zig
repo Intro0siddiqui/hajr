@@ -18,6 +18,29 @@ pub fn build(b: *Build) void {
 
     b.installArtifact(lib);
 
+    // FFI Bindings (shared library for SpiderMonkey/Bun/Deno)
+    const ffi_lib = b.addLibrary(.{
+        .name = "hajr_ffi",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/hajr/sm_bindings.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .linkage = .dynamic,
+    });
+    b.installArtifact(ffi_lib);
+
+    // Examples
+    const example = b.addExecutable(.{
+        .name = "simple_sandbox",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/simple_sandbox.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.installArtifact(example);
+
     // Build tests
     const tests = b.addTest(.{
         .root_module = b.createModule(.{

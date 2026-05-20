@@ -4,9 +4,10 @@
 //! using lock-free ring buffers with sequence validation.
 
 const std = @import("std");
+const posix = std.posix;
 const atomic = std.atomic;
 const mem = std.mem;
-const builtin = @import("builtin");
+const hw = @import("../hw/mod.zig");
 const hajr = @import("../root.zig").hajr;
 const sandbox = @import("../core/sandbox.zig");
 
@@ -49,7 +50,7 @@ pub const IpcMessageType = enum(u32) {
     /// Response to query
     response = 0x03,
     /// Error occurred
-    error = 0x04,
+    @"error" = 0x04,
     /// Shutdown sandbox
     shutdown = 0x05,
     /// Heartbeat/keepalive
@@ -192,22 +193,20 @@ pub const IpcRing = struct {
             .sequence = ring.sequence.fetchAdd(1, .acq_rel),
             .source_id = source_id,
             .target_id = target_id,
-            .timestamp = @as(u64, @intCast(@max(0, std.time.nanoTimestamp()))),
+            .timestamp = hw.posix_io.monotonicTimestamp(),
             .checksum = 0, // Would calculate CRC32
             .reserved = 0,
         };
         
         @memcpy(slot.payload[0..payload.len], payload);
         
-        // Memory barrier before marking occupied
-        std.atomic.fence(.release);
-        
         slot.occupied.store(true, .release);
     }
     
     /// Receive a message (consumer side)
-    pub fn recv(ring: *IpcRing, buf: *std.ArrayList(u8)) !IpcHeader {
-        const tail = ring.tail.fetchAdd(1, .acq_rel);
+    pub fn recv(ring: *IpcRing, allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8)) !IpcHeader {
+        // Load current tail WITHOUT advancing yet — we must read the slot first
+        const tail = ring.tail.load(.acquire);
         const slot_idx = tail % ring.slots.len;
         
         const slot = &ring.slots[slot_idx];
@@ -222,20 +221,22 @@ pub const IpcRing = struct {
             std.atomic.spinLoopHint();
         }
         
-        // Read header and payload
+        // Read header and payload BEFORE advancing tail
         const header = slot.header;
-        try buf.resize(header.payload_len);
-        @memcpy(buf.items.ptr, slot.payload[0..header.payload_len].ptr, header.payload_len);
+        try buf.resize(allocator, header.payload_len);
+        @memcpy(buf.items[0..header.payload_len], slot.payload[0..header.payload_len]);
         
         // Clear slot and mark free
-        std.atomic.fence(.release);
         slot.occupied.store(false, .release);
+        
+        // Advance tail AFTER data has been safely copied
+        ring.tail.store(tail + 1, .release);
         
         return header;
     }
     
     /// Try to receive without blocking
-    pub fn tryRecv(ring: *IpcRing, buf: *std.ArrayList(u8)) ?IpcHeader {
+    pub fn tryRecv(ring: *IpcRing, allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8)) ?IpcHeader {
         const tail = ring.tail.load(.acquire);
         const slot_idx = tail % ring.slots.len;
         
@@ -244,16 +245,14 @@ pub const IpcRing = struct {
             return null;
         }
         
-        // Double-check we haven't advanced past it (rare in SPSC but good for robustness)
-        if (ring.tail.load(.acquire) != tail) return null;
-
+        // Copy data before advancing tail
         const header = slot.header;
-        buf.resize(header.payload_len) catch return null;
-        @memcpy(buf.items.ptr, slot.payload[0..header.payload_len].ptr, header.payload_len);
+        buf.resize(allocator, header.payload_len) catch return null;
+        @memcpy(buf.items[0..header.payload_len], slot.payload[0..header.payload_len]);
         
-        _ = ring.tail.fetchAdd(1, .acq_rel); // Now actually consume it
-        std.atomic.fence(.release);
+        // Mark slot free then advance tail (non-blocking: store, not fetchAdd)
         slot.occupied.store(false, .release);
+        ring.tail.store(tail + 1, .release);
         
         return header;
     }
@@ -326,13 +325,13 @@ pub const IpcChannel = struct {
     }
     
     /// Receive message from peer
-    pub fn recvMsg(channel: *IpcChannel, buf: *std.ArrayList(u8)) !IpcHeader {
-        return channel.recv_ring.recv(buf);
+    pub fn recvMsg(channel: *IpcChannel, allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8)) !IpcHeader {
+        return channel.recv_ring.recv(allocator, buf);
     }
     
     /// Try to receive without blocking
-    pub fn tryRecvMsg(channel: *IpcChannel, buf: *std.ArrayList(u8)) ?IpcHeader {
-        return channel.recv_ring.tryRecv(buf);
+    pub fn tryRecvMsg(channel: *IpcChannel, allocator: std.mem.Allocator, buf: *std.ArrayListUnmanaged(u8)) ?IpcHeader {
+        return channel.recv_ring.tryRecv(allocator, buf);
     }
     
     /// Destroy channel
@@ -353,33 +352,31 @@ pub const IpcRouter = struct {
     /// Worker thread
     thread: ?std.Thread,
     /// Shutdown flag
-    shutdown: atomic.Bool,
+    shutdown: atomic.Value(bool),
+    /// Allocator
+    allocator: std.mem.Allocator,
     
-    pub fn init() !IpcRouter {
+    pub fn init(allocator: std.mem.Allocator) !IpcRouter {
         const inbound = try IpcRing.create(RING_SLOTS, SandboxTier.trusted.getProtectionKey(), .root, .trusted);
         const outbound = try IpcRing.create(RING_SLOTS, SandboxTier.trusted.getProtectionKey(), .trusted, .root);
         
         return IpcRouter{
-            .channels = std.AutoHashMap(u64, *IpcChannel).init(std.heap.page_allocator),
+            .channels = std.AutoHashMap(u64, *IpcChannel).init(allocator),
             .inbound = inbound,
             .outbound = outbound,
             .thread = null,
-            .shutdown = atomic.Bool.init(false),
+            .shutdown = atomic.Value(bool).init(false),
+            .allocator = allocator,
         };
     }
     
-    /// Start the router worker thread
-    pub fn start(router: *IpcRouter) !void {
-        router.thread = try std.Thread.spawn(.{}, routerWorker, .{router});
-    }
-    
     fn routerWorker(router: *IpcRouter) void {
-        var buf = std.ArrayList(u8).init(std.heap.page_allocator);
-        defer buf.deinit();
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(router.allocator);
         
         while (!router.shutdown.load(.acquire)) {
             if (router.inbound.available() > 0) {
-                const header = router.inbound.recv(&buf) catch continue;
+                const header = router.inbound.recv(router.allocator, &buf) catch continue;
                 
                 // Route message to appropriate channel
                 const channel = router.channels.get(header.target_id);
@@ -405,7 +402,7 @@ pub const IpcRouter = struct {
     
     /// Unregister a channel
     pub fn unregisterChannel(router: *IpcRouter, sandbox_id: u64) void {
-        router.channels.remove(sandbox_id);
+        _ = router.channels.remove(sandbox_id);
     }
     
     /// Shutdown the router
@@ -425,46 +422,6 @@ pub const IpcRouter = struct {
     }
 };
 
-const protection = hajr.protection;
-
-/// Extension trait for hardware protection
-pub const HardwareProtection = struct {
-    /// Get MPK protection key for tier
-    pub fn getProtectionKey(tier: SandboxTier) u32 {
-        return switch (tier) {
-            .root => 0,
-            .trusted => 1,
-            .untrusted => 2,
-            .isolated => 3,
-        };
-    }
-    
-    /// Apply MPK protection to memory region
-    pub fn applyProtection(base: [*]u8, size: usize, key: u32, read: bool, write: bool) !void {
-        _ = read;
-        _ = write;
-        try protection.ProtectionProvider.applyToRegion(base, size, key);
-    }
-    
-    /// Remove all MPK protection (for trusted code)
-    pub fn clearProtection() void {
-        protection.ProtectionProvider.setProtection(0, .read_write);
-    }
-    
-    /// Set protection key for untrusted code (should be called before entering sandbox)
-    pub fn setSandboxProtection(value: u32) void {
-        // Here 'value' is assumed to be the PKRU bitmask or a key index depending on usage
-        // For consistency with ProtectionProvider, we treat it as a bitmask/value
-        if (builtin.cpu.arch == .x86_64 and builtin.os.tag == .linux) {
-            sandbox.MPK.wrpkru.writePKRU(value);
-        }
-    }
-};
-
-/// Convenience function to get tier protection key
-fn tierKey(tier: SandboxTier) u32 {
-    return HardwareProtection.getProtectionKey(tier);
-}
 
 // ============================================================================
 // Tests
@@ -479,10 +436,10 @@ test "IpcRing basic operations" {
     try ring.send(.execute, 1, 2, payload);
     
     // Test receive
-    var buf = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer buf.deinit();
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
     
-    const header = try ring.recv(&buf);
+    const header = try ring.recv(std.testing.allocator, &buf);
     try std.testing.expect(header.msg_type == @intFromEnum(IpcMessageType.execute));
     try std.testing.expectEqualSlices(u8, payload, buf.items);
 }
@@ -496,20 +453,20 @@ test "IpcChannel bidirectional communication" {
     try channel.sendMsg(.execute, msg);
     
     // Simulate receiving (in real use, would come from other side)
-    var buf = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer buf.deinit();
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
     
-    const header = try channel.recvMsg(&buf);
+    const header = try channel.recvMsg(std.testing.allocator, &buf);
     try std.testing.expectEqual(@as(u32, @intFromEnum(IpcMessageType.execute)), header.msg_type);
     try std.testing.expectEqualSlices(u8, msg, buf.items);
 }
 
 test "IpcRouter channel management" {
-    var router = try IpcRouter.init();
+    var router = try IpcRouter.init(std.testing.allocator);
     defer router.destroy();
     
     var channel = try IpcChannel.create(1, 2, 1, 2);
-    try router.registerChannel(1, channel);
+    try router.registerChannel(1, &channel);
     
     try std.testing.expect(router.channels.count() == 1);
     

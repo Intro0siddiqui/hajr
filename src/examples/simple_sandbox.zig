@@ -3,8 +3,8 @@
 //! Demonstrates basic sandbox creation, IPC, and hardware protection.
 
 const std = @import("std");
-const sandbox = @import("core/sandbox.zig");
-const ipc = @import("ipc/ipc.zig");
+const sandbox = @import("../core/sandbox.zig");
+const ipc = @import("../ipc/ipc.zig");
 
 pub fn main() !void {
     std.debug.print("Hajr Browser Sandbox - Simple Example\n", .{});
@@ -15,7 +15,7 @@ pub fn main() !void {
     std.debug.print("Hardware protection: {s}\n", .{@tagName(mechanism)});
     
     // Create sandbox manager
-    var manager = try sandbox.SandboxManager.init(.{
+    var manager = try sandbox.SandboxManager.init(std.heap.page_allocator, .{
         .max_sandboxes = 4,
         .ring_buffer_size = 4096,
         .enable_hardware_protection = true,
@@ -105,7 +105,7 @@ pub fn main() !void {
 }
 
 test "Basic sandbox operations" {
-    var manager = try sandbox.SandboxManager.init(.{
+    var manager = try sandbox.SandboxManager.init(std.testing.allocator, .{
         .max_sandboxes = 2,
     });
     defer manager.shutdown();
