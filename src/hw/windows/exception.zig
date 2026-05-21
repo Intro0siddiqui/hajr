@@ -17,7 +17,7 @@ pub const FaultInfo = struct {
 };
 
 /// Callback type for fault handlers.
-pub const FaultHandlerFn = *const fn (info: FaultInfo) callconv(.C) void;
+pub const FaultHandlerFn = *const fn (info: FaultInfo) callconv(.c) void;
 
 var registered_handler: ?FaultHandlerFn = null;
 
@@ -30,7 +30,7 @@ pub fn registerFaultHandler(handler: FaultHandlerFn) void {
 
 /// VEH adapter function. Called by Windows when any exception occurs.
 /// Filters for EXCEPTION_ACCESS_VIOLATION (memory protection faults).
-fn vehAdapter(exception_info: *windows.EXCEPTION_POINTERS) callconv(.C) windows.LONG {
+fn vehAdapter(exception_info: *windows.EXCEPTION_POINTERS) callconv(.c) windows.LONG {
     const record = exception_info.ExceptionRecord;
     if (record.ExceptionCode != windows.STATUS_ACCESS_VIOLATION) {
         return windows.EXCEPTION_CONTINUE_SEARCH;

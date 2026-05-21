@@ -57,7 +57,7 @@ pub const HardwareProtection = struct {
         switch (builtin.cpu.arch) {
             .x86_64, .x86 => {
                 // Check if the current CPU supports PKU via compile-time feature detection
-                if (builtin.cpu.features.isEnabled("pku")) {
+                if (builtin.cpu.features.isEnabled(@intFromEnum(std.Target.x86.Feature.pku))) {
                     if (hw.compartment.global_allocator.detectMpk()) {
                         return .intel_mpk;
                     }

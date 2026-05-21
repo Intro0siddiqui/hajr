@@ -13,6 +13,9 @@ pub const posix_io = @import("posix.zig");
 pub const os = @import("os_abstraction.zig");
 pub const windows = @import("windows.zig");
 
+extern fn haj_wrpkru(value: u32) callconv(.c) void;
+extern fn haj_rdpkru() callconv(.c) u32;
+
 /// Memory protection permissions
 pub const Permission = enum {
     none,
@@ -56,6 +59,7 @@ const X86_64_Linux = struct {
     /// WRPKRU requires EAX = value, ECX = 0, EDX = 0.
     pub fn writeProtectionKey(value: u32) void {
         if (!compartment.global_allocator.detectMpk()) return;
+        if (comptime !builtin.cpu.features.isEnabled(@intFromEnum(std.Target.x86.Feature.pku))) return;
         asm volatile (
             \\xorl %%ecx, %%ecx
             \\xorl %%edx, %%edx
@@ -70,6 +74,7 @@ const X86_64_Linux = struct {
     /// RDPKRU requires ECX = 0, returns value in EAX (and 0 in EDX).
     pub fn readProtectionKey() u32 {
         if (!compartment.global_allocator.detectMpk()) return 0;
+        if (comptime !builtin.cpu.features.isEnabled(@intFromEnum(std.Target.x86.Feature.pku))) return 0;
         var value: u32 = undefined;
         asm volatile (
             \\xorl %%ecx, %%ecx
@@ -118,27 +123,12 @@ const X86_64_Linux = struct {
 const X86_64_Portable = struct {
     pub fn writeProtectionKey(value: u32) void {
         if (!compartment.global_allocator.detectMpk()) return;
-        asm volatile (
-            \\xorl %%ecx, %%ecx
-            \\xorl %%edx, %%edx
-            \\wrpkru
-            :
-            : [val] "{eax}" (value)
-            : .{ .ecx = true, .edx = true, .memory = true }
-        );
+        haj_wrpkru(value);
     }
 
     pub fn readProtectionKey() u32 {
         if (!compartment.global_allocator.detectMpk()) return 0;
-        var value: u32 = undefined;
-        asm volatile (
-            \\xorl %%ecx, %%ecx
-            \\rdpkru
-            : [ret] "={eax}" (value)
-            :
-            : .{ .ecx = true, .edx = true }
-        );
-        return value;
+        return haj_rdpkru();
     }
 
     pub fn setKeyPermission(key: u32, perm: Permission) void {

@@ -7,12 +7,12 @@ pub fn init() void {
 
     var sa: std.posix.Sigaction = .{
         .handler = .{ .sigaction = handleFault },
-        .mask = std.posix.empty_sigset,
+        .mask = std.posix.sigset_t{0},
         .flags = std.posix.SA.SIGINFO | std.posix.SA.ONSTACK, // SIGINFO + alternate stack
     };
 
-    _ = std.posix.sigaction(std.posix.SIG.SEGV, &sa, null) catch {};
-    _ = std.posix.sigaction(std.posix.SIG.BUS, &sa, null) catch {};
+    _ = std.posix.sigaction(std.posix.SIG.SEGV, &sa, null);
+    _ = std.posix.sigaction(std.posix.SIG.BUS, &sa, null);
 }
 
 var fault_callback: ?os_abstraction.FaultHandlerFn = null;
@@ -21,15 +21,12 @@ pub fn registerCallback(cb: os_abstraction.FaultHandlerFn) void {
     fault_callback = cb;
 }
 
-fn handleFault(sig: i32, info: *const std.posix.siginfo_t, ctx_ptr: ?*anyopaque) callconv(.C) void {
+fn handleFault(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?*anyopaque) callconv(.c) void {
     _ = sig;
     _ = ctx_ptr;
 
     if (fault_callback) |cb| {
         const addr = @as(usize, @intFromPtr(info.fields.sigfault.addr));
-        // Simple translation: on x86_64, SI_FAULT_WRITE is encoded in info.si_code
-        // This is highly architecture dependent. 
-        // For now, keep it simple as requested.
         const fault_info = os_abstraction.FaultInfo{
             .address = addr,
             .is_write = true, // Simplified
@@ -37,6 +34,6 @@ fn handleFault(sig: i32, info: *const std.posix.siginfo_t, ctx_ptr: ?*anyopaque)
         };
         cb(fault_info);
     } else {
-        std.posix.exit(1);
+        std.process.exit(1);
     }
 }

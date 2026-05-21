@@ -233,7 +233,7 @@ pub fn monotonicTimestamp() u64 {
 // ============================================================================
 
 /// Information about a hardware memory fault.
-pub const FaultInfo = struct {
+pub const FaultInfo = extern struct {
     /// The memory address that caused the fault.
     address: usize,
     /// Whether the fault was caused by a write access.
@@ -243,7 +243,7 @@ pub const FaultInfo = struct {
 };
 
 /// Callback type for fault handlers.
-pub const FaultHandlerFn = *const fn (info: FaultInfo) callconv(.C) void;
+pub const FaultHandlerFn = *const fn (info: FaultInfo) callconv(.c) void;
 
 /// Register a handler for hardware memory protection faults.
 /// On POSIX: registers sigaction for SIGSEGV and SIGBUS.

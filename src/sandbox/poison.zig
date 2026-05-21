@@ -392,7 +392,7 @@ pub const RecoveryManager = struct {
 
 /// Default memory unmapping function
 pub fn defaultUnmap(base: [*]align(4096) u8, size: usize) void {
-    posix.munmap(base[0..size]);
+    hw.os.memFree(base[0..size]);
 }
 
 /// Default hardware key release function

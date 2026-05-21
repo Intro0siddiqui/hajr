@@ -4,9 +4,7 @@
 //! using lock-free ring buffers with sequence validation.
 
 const std = @import("std");
-const posix = std.posix;
 const atomic = std.atomic;
-const mem = std.mem;
 const crc = std.hash.crc;
 const hw = @import("../hw/mod.zig");
 const sandbox = @import("../core/sandbox.zig");

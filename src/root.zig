@@ -12,5 +12,7 @@ pub const bindings = @import("sandbox/bindings.zig");
 test {
     _ = @import("sandbox/system.zig");
     _ = @import("ipc/ipc.zig");
+    _ = @import("tests/integration.zig");
+    _ = @import("tests/hardening.zig");
     @import("std").testing.refAllDecls(@This());
 }
