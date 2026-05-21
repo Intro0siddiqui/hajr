@@ -22,7 +22,7 @@ pub fn build(b: *Build) void {
     const ffi_lib = b.addLibrary(.{
         .name = "hajr_ffi",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/hajr/sm_bindings.zig"),
+            .root_source_file = b.path("src/ffi/spidermonkey.zig"),
             .target = target,
             .optimize = optimize,
         }),

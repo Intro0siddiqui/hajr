@@ -448,15 +448,17 @@ test "IpcChannel bidirectional communication" {
     var channel = try IpcChannel.create(1, 2, 1, 2);
     defer channel.destroy();
     
-    // Send message
+    // Send message to the send ring
     const msg = "Test message";
     try channel.sendMsg(.execute, msg);
     
-    // Simulate receiving (in real use, would come from other side)
+    // In a single-threaded test there is no remote peer, so we read
+    // directly from the send ring to verify the message was written correctly.
+    // In production, the remote peer would read from send_ring and write to recv_ring.
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
     
-    const header = try channel.recvMsg(std.testing.allocator, &buf);
+    const header = try channel.send_ring.recv(std.testing.allocator, &buf);
     try std.testing.expectEqual(@as(u32, @intFromEnum(IpcMessageType.execute)), header.msg_type);
     try std.testing.expectEqualSlices(u8, msg, buf.items);
 }

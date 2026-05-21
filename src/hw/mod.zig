@@ -10,6 +10,8 @@ pub const pointer = @import("pointer.zig");
 pub const compartment = @import("compartment.zig");
 pub const exception = @import("exception.zig");
 pub const posix_io = @import("posix.zig");
+pub const os = @import("os_abstraction.zig");
+pub const windows = @import("windows.zig");
 
 /// Memory protection permissions
 pub const Permission = enum {
@@ -104,8 +106,7 @@ const X86_64_Linux = struct {
 
     pub fn applyProtectionToRegion(ptr: [*]u8, len: usize, key: u32) !void {
         if (compartment.global_allocator.detectMpk()) {
-            // pkey_mprotect(void *addr, size_t len, int prot, int pkey)
-            const prot = @as(u32, @bitCast(std.os.linux.PROT{ .READ = true, .WRITE = true }));
+            const prot: u32 = @bitCast(std.os.linux.PROT{ .READ = true, .WRITE = true });
             
             const res = std.os.linux.syscall6(
                 .pkey_mprotect,
@@ -114,11 +115,10 @@ const X86_64_Linux = struct {
                 prot,
                 key,
                 0,
-                0
+                0,
             );
-            if (res != 0) return error.ProtectionFailed;
+            if (std.os.linux.errno(res) != .SUCCESS) return error.ProtectionFailed;
         } else {
-            // Fallback to standard memory protection (mprotect) without key
             return Fallback.applyProtectionToRegion(ptr, len, key);
         }
     }
@@ -206,17 +206,16 @@ const AArch64_Linux = struct {
     }
 
     pub fn applyProtectionToRegion(ptr: [*]u8, len: usize, key: u32) !void {
-        const prot_base = @as(u32, @bitCast(std.os.linux.PROT{ .READ = true, .WRITE = true }));
+        const prot_base: u32 = std.os.linux.PROT.READ | std.os.linux.PROT.WRITE;
         const PROT_MTE = 0x20;
 
-        // 1. Enable MTE on the region
         const res = std.os.linux.syscall3(
             .mprotect,
             @intFromPtr(ptr),
             len,
             prot_base | PROT_MTE,
         );
-        if (res != 0) return error.ProtectionFailed;
+        if (std.os.linux.errno(res) != .SUCCESS) return error.ProtectionFailed;
 
         // 2. Tag the memory granules
         // MTE granule is 16 bytes. The tag is stored in bits [59:56] of the pointer.

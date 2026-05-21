@@ -86,15 +86,13 @@ fn pkey_alloc(flags: u32, access_rights: u32) PkeyError!i32 {
     if (builtin.os.tag != .linux) @compileError("pkey_alloc is Linux-only");
 
     const res = std.os.linux.syscall2(.pkey_alloc, flags, access_rights);
-    const signed_res = @as(isize, @bitCast(res));
     
-    // Check for error (Linux returns -errno)
-    if (signed_res < 0 and signed_res > -4096) {
-        const err = -signed_res;
+    if (std.os.linux.errno(res) != .SUCCESS) {
+        const err = std.os.linux.errno(res);
         return switch (err) {
-            22 => error.InvalidArgument, // EINVAL
-            28 => error.NoSpace,        // ENOSPC
-            38 => error.SystemNotSupported, // ENOSYS
+            .INVAL => error.InvalidArgument,
+            .NOSPC => error.NoSpace,
+            .NOSYS => error.SystemNotSupported,
             else => error.Unexpected,
         };
     }
@@ -106,13 +104,12 @@ fn pkey_free(pkey: i32) PkeyFreeError!void {
     if (builtin.os.tag != .linux) @compileError("pkey_free is Linux-only");
 
     const res = std.os.linux.syscall1(.pkey_free, @as(u64, @intCast(pkey)));
-    const signed_res = @as(isize, @bitCast(res));
     
-    if (signed_res < 0 and signed_res > -4096) {
-        const err = -signed_res;
+    if (std.os.linux.errno(res) != .SUCCESS) {
+        const err = std.os.linux.errno(res);
         return switch (err) {
-            22 => error.InvalidArgument, // EINVAL
-            38 => error.SystemNotSupported, // ENOSYS
+            .INVAL => error.InvalidArgument,
+            .NOSYS => error.SystemNotSupported,
             else => error.Unexpected,
         };
     }

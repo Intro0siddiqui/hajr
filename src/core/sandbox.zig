@@ -421,8 +421,8 @@ pub const Arena = struct {
         const memory = try posix.mmap(
             null,
             size,
-            posix.PROT.read | posix.PROT.write,
-            posix.MAP.private | posix.MAP.anonymous,
+            .{ .READ = true, .WRITE = true },
+            .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
             -1,
             0,
         );
