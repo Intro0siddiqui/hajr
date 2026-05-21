@@ -12,7 +12,7 @@ pub fn main() !void {
     
     // Detect hardware protection mechanism
     const mechanism = sandbox.HardwareProtection.detect();
-    std.debug.print("Hardware protection: {s}\n", .{@tagName(mechanism)});
+    std.debug.print("Hardware protection: {s}\n", .{@tagName(try mechanism)});
     
     // Create sandbox manager
     var manager = try sandbox.SandboxManager.init(std.heap.page_allocator, .{
@@ -100,8 +100,6 @@ pub fn main() !void {
     
     std.debug.print("\n=== Example completed successfully ===\n", .{});
     
-    // Cleanup happens via defer
-    _ = channel;
 }
 
 test "Basic sandbox operations" {

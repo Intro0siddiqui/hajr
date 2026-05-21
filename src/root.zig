@@ -7,9 +7,7 @@ pub const sandbox_rt = struct {
     pub const poison = @import("sandbox/poison.zig");
     pub const system = @import("sandbox/system.zig");
 };
-pub const ffi = struct {
-    pub const spidermonkey = @import("ffi/spidermonkey.zig");
-};
+pub const bindings = @import("sandbox/bindings.zig");
 
 test {
     _ = @import("sandbox/system.zig");

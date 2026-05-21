@@ -8,6 +8,8 @@ const sandbox = @import("../core/sandbox.zig");
 
 pub const RingMetadata = sandbox.RingMetadata;
 
+/// Request types for browser-level backend routing.
+/// These are protocol constants — the actual backends are injected via `BackendHandler`.
 pub const RequestType = enum(u32) {
     invalid = 0,
     net_fetch = 1,
@@ -21,7 +23,12 @@ pub const IPCRequest = extern struct {
     sandbox_id: u64,
 };
 
-/// Interface for backend service routing
+/// Interface for backend service routing.
+/// 
+/// These are *pluggable hooks* for browser-level subsystems (e.g. z-net, BrowserDB).
+/// Hajr itself only provides the routing fabric and default no-op stubs.
+/// The actual backend implementations live in their own repositories and
+/// replace `DefaultHandlers` at browser initialization time.
 pub const BackendHandler = struct {
     z_fetch: *const fn (sandbox_id: u64, payload: []const u8) void,
     browser_db: *const fn (sandbox_id: u64, payload: []const u8) void,

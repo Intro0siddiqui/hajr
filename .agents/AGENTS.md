@@ -3,7 +3,7 @@
 This file documents the specialized sub-agents and their roles for the Hajr project, ensuring efficient task delegation and context preservation.
 
 ## Required Reading
-**Before implementing any changes, read `.agents/TECHNICAL_STANDARDS.md` first.** This document contains critical Zig 0.16 compatibility requirements, syscall conventions, and hardware primitive rules.
+**Before implementing any changes, read `ZIG_DEVELOPER_GUIDE.md` first.** This document contains critical Zig 0.16 compatibility requirements, syscall conventions, and hardware primitive rules.
 
 ## Sub-Agent Registry
 

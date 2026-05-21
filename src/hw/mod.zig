@@ -106,18 +106,8 @@ const X86_64_Linux = struct {
 
     pub fn applyProtectionToRegion(ptr: [*]u8, len: usize, key: u32) !void {
         if (compartment.global_allocator.detectMpk()) {
-            const prot: u32 = @bitCast(std.os.linux.PROT{ .READ = true, .WRITE = true });
-            
-            const res = std.os.linux.syscall6(
-                .pkey_mprotect,
-                @intFromPtr(ptr),
-                len,
-                prot,
-                key,
-                0,
-                0,
-            );
-            if (std.os.linux.errno(res) != .SUCCESS) return error.ProtectionFailed;
+            const prot = std.os.linux.PROT{ .READ = true, .WRITE = true };
+            try os.pkeyMprotect(ptr, len, prot, key);
         } else {
             return Fallback.applyProtectionToRegion(ptr, len, key);
         }
@@ -201,19 +191,24 @@ const AArch64_Linux = struct {
     pub fn setKeyPermission(key: u32, perm: Permission) void {
         _ = key;
         _ = perm;
-        // MTE does not use a global register like PKRU for individual keys.
-        // Instead, it uses pointer tags.
+        // MTE uses per-allocation pointer tags, not a global PKRU-style register.
+        // Permission changes require re-tagging the allocated granules via the
+        // pointer tag stored in bits [59:56], not a global permission register.
+        // This is a no-op because the caller uses the key+perm interface designed
+        // for x86_64 MPK; on AArch64, permissions are set at allocation time
+        // via applyProtectionToRegion (which passes PROT_MTE to mprotect).
     }
 
     pub fn applyProtectionToRegion(ptr: [*]u8, len: usize, key: u32) !void {
-        const prot_base: u32 = std.os.linux.PROT.READ | std.os.linux.PROT.WRITE;
-        const PROT_MTE = 0x20;
+        const prot = std.os.linux.PROT{ .READ = true, .WRITE = true };
+        const PROT_MTE: u32 = 0x20;
+        const prot_val: u32 = @as(u32, @bitCast(prot)) | PROT_MTE;
 
         const res = std.os.linux.syscall3(
             .mprotect,
             @intFromPtr(ptr),
             len,
-            prot_base | PROT_MTE,
+            prot_val,
         );
         if (std.os.linux.errno(res) != .SUCCESS) return error.ProtectionFailed;
 
@@ -260,6 +255,9 @@ const AArch64_Portable = struct {
     pub fn setKeyPermission(key: u32, perm: Permission) void {
         _ = key;
         _ = perm;
+        // AArch64 Portable no-op: MTE is not available outside Linux.
+        // Permission changes are a no-op since there is no PKRU-style
+        // global register on AArch64, and MTE is Linux-specific.
     }
 
     pub fn applyProtectionToRegion(ptr: [*]u8, len: usize, key: u32) !void {
@@ -280,13 +278,16 @@ const Fallback = struct {
     pub fn setKeyPermission(key: u32, perm: Permission) void {
         _ = key;
         _ = perm;
+        // Software fallback no-op: no hardware permission mechanism exists.
+        // The key+perm interface is specific to x86_64 MPK; on systems
+        // without MPK/MTE, global permission changes are not supported.
     }
 
     pub fn applyProtectionToRegion(ptr: [*]u8, len: usize, key: u32) !void {
         _ = key;
 
         if (@hasDecl(std.posix, "mprotect")) {
-            const prot = std.posix.PROT.READ | std.posix.PROT.WRITE;
+            const prot = std.posix.PROT{ .READ = true, .WRITE = true };
             try std.posix.mprotect(ptr[0..len], prot);
         }
     }

@@ -1,12 +1,12 @@
-//! Hajr Phase 2 Integration Module
+//! Hajr Sandbox System Integration Module
 //! 
-//! Ties together all Phase 2 components: Arena Layout, SpiderMonkey FFI,
+//! Ties together all sandbox components: Arena Layout, SpiderMonkey FFI,
 //! Tier 1 Router, and Poison Protocol for complete zero-copy sandbox system.
 
 const std = @import("std");
 const atomic = std.atomic;
 const memory = @import("memory.zig");
-const sm_bindings = @import("sm_bindings.zig");
+const sm_bindings = @import("bindings.zig");
 const router = @import("router.zig");
 const poison = @import("poison.zig");
 
@@ -18,7 +18,7 @@ const poison = @import("poison.zig");
 /// 
 /// STATUS: ✅ COMPLETE
 /// 
-/// Implemented in `src/hajr/memory.zig`:
+/// Implemented in `src/sandbox/memory.zig`: 
 /// - `SandboxMemory` struct with deterministic layout
 /// - `ArenaLayout` with configurable segment sizes
 /// - Page-aligned (4096) segments with guard pages
@@ -36,7 +36,7 @@ const poison = @import("poison.zig");
 /// 
 /// STATUS: ✅ COMPLETE
 /// 
-/// Implemented in `src/hajr/sm_bindings.zig`:
+/// Implemented in `src/ffi/spidermonkey.zig`:
 /// - C ABI functions for ring I/O
 /// - External ArrayBuffer creation (zero-copy)
 /// - Thread-local FFI configuration
@@ -55,10 +55,10 @@ const poison = @import("poison.zig");
 /// 
 /// STATUS: ✅ COMPLETE
 /// 
-/// Implemented in `src/hajr/router.zig`:
+/// Implemented in `src/sandbox/router.zig`:
 /// - `RingRouter` with lock-free polling
 /// - `OutboundRing` descriptor for each sandbox
-/// - `BackendHandler` interface for z-net/BrowserDB
+/// - `BackendHandler` interface (pluggable — browser-level subsystems wire in their own handlers)
 /// - Atomic head/tail pointer iteration
 /// - Request routing with payload handling
 /// - `BatchPoller` for multi-sandbox scenarios
@@ -74,7 +74,7 @@ const poison = @import("poison.zig");
 /// 
 /// STATUS: ✅ COMPLETE
 /// 
-/// Implemented in `src/hajr/poison.zig`:
+/// Implemented in `src/sandbox/poison.zig`:
 /// - `PoisonableRingMetadata` with poison bit
 /// - `Tier0Observer` for fault monitoring
 /// - `ObservableRing` for sandbox tracking
@@ -90,11 +90,11 @@ const poison = @import("poison.zig");
 /// - `PoisonAwareRouter` - Integrated router + observer
 
 // ============================================================================
-// Complete Sandbox Instance (All Phase 2 Components)
+// Complete Sandbox Instance (All Components)
 // ============================================================================
 
-/// Complete sandbox instance integrating all Phase 2 components
-pub const Phase2Sandbox = struct {
+/// Complete sandbox instance integrating all components
+pub const SandboxInstance = struct {
     /// Memory arena with ring buffers and JS heap
     arena: *memory.SandboxMemory,
     
@@ -117,8 +117,8 @@ pub const Phase2Sandbox = struct {
     /// Active flag
     active: atomic.Value(bool),
     
-    /// Create a complete Phase 2 sandbox
-    pub fn create(id: u64, layout: memory.ArenaLayout) !*Phase2Sandbox {
+    /// Create a complete sandbox instance
+    pub fn create(id: u64, layout: memory.ArenaLayout) !*SandboxInstance {
         // 1. Create memory arena
         const arena = try memory.SandboxMemory.create(layout);
         
@@ -153,7 +153,7 @@ pub const Phase2Sandbox = struct {
             .protection_key = arena.protection_key,
             .thread_handle = null,
             .expected_sequence = 0,
-            .memory = undefined,
+            .memory = @ptrCast(arena),
         };
         // 5. Create router outbound ring descriptor
         const outbound_ring = try std.heap.page_allocator.create(router.OutboundRing);
@@ -166,8 +166,8 @@ pub const Phase2Sandbox = struct {
         };
         
         // 6. Create sandbox instance
-        const sandbox = try std.heap.page_allocator.create(Phase2Sandbox);
-        sandbox.* = Phase2Sandbox{
+        const sandbox = try std.heap.page_allocator.create(SandboxInstance);
+        sandbox.* = SandboxInstance{
             .arena = arena,
             .inbound_meta = inbound_meta,
             .outbound_meta = outbound_meta,
@@ -182,7 +182,7 @@ pub const Phase2Sandbox = struct {
     }
     
     /// Destroy sandbox and free all resources
-    pub fn destroy(sandbox: *Phase2Sandbox) void {
+    pub fn destroy(sandbox: *SandboxInstance) void {
         sandbox.active.store(false, .release);
         
         // Unmap memory (triggers guard page fault if accessed)
@@ -200,12 +200,12 @@ pub const Phase2Sandbox = struct {
 // Zero-Copy Data Flow Diagram
 // ============================================================================
 //
-// Phase 2 Zero-Copy Data Flow:
+// Sandbox Zero-Copy Data Flow:
 // 
 // Tier 1 (Main Process)              Tier 2 (Sandboxed Engine)
 // =======================            =========================
 // 
-// z-net receives HTTP/3               SpiderMonkey JS Engine
+// Browser backend (e.g. z-net)         SpiderMonkey JS Engine
 //       ↓                                 ↑
 //       │                                 │
 //       ▼                                 │
@@ -239,7 +239,7 @@ pub const Phase2Sandbox = struct {
 //   6. No state leakage, crash-only recovery
 
 // ============================================================================
-// Phase 2 Completion Checklist
+// Sandbox Completion Checklist
 // ============================================================================
 
 
@@ -247,14 +247,14 @@ pub const Phase2Sandbox = struct {
 // Tests
 // ============================================================================
 
-test "Phase 2 complete sandbox creation" {
+test "Sandbox system complete sandbox creation" {
     const layout = memory.ArenaLayout{
         .inbound_size = 4096,
         .outbound_size = 4096,
         .js_heap_size = 1024 * 1024,
     };
     
-    const sandbox = try Phase2Sandbox.create(1, layout);
+    const sandbox = try SandboxInstance.create(1, layout);
     defer sandbox.destroy();
     
     // Verify JS heap pointer is within arena
@@ -295,7 +295,7 @@ test "FFI pointer bounds validation" {
         .js_heap_size = 1024 * 1024,
     };
     
-    const sandbox = try Phase2Sandbox.create(1, layout);
+    const sandbox = try SandboxInstance.create(1, layout);
     defer sandbox.destroy();
     
     // Initialize FFI with sandbox config

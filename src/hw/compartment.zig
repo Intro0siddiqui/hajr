@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const os_abs = @import("os_abstraction.zig");
 
 /// A unified token representing a hardware compartment (PKEY on x86, MTE Tag on ARM)
 pub const CompartmentToken = struct {
@@ -18,11 +19,11 @@ pub const CompartmentAllocator = struct {
     pub fn detectMpk(self: *CompartmentAllocator) bool {
         if (self.mpk_supported) |supported| return supported;
         if (comptime builtin.cpu.arch == .x86_64 and builtin.os.tag == .linux) {
-            const pkey = pkey_alloc(0, 0) catch {
+            const pkey = os_abs.pkeyAlloc(0, 0) catch {
                 self.mpk_supported = false;
                 return false;
             };
-            _ = pkey_free(pkey) catch {};
+            _ = os_abs.pkeyFree(pkey) catch {};
             self.mpk_supported = true;
             return true;
         }
@@ -35,7 +36,7 @@ pub const CompartmentAllocator = struct {
     /// On AArch64, this implements a logical tag allocator (0-15).
     pub fn alloc(self: *CompartmentAllocator) !CompartmentToken {
         if (self.detectMpk()) {
-            const pkey = try pkey_alloc(0, 0);
+            const pkey = try os_abs.pkeyAlloc(0, 0);
             const id: u32 = @intCast(pkey);
             // Track used key (0-15)
             self.used_mask |= (@as(u16, 1) << @intCast(id & 0xF));
@@ -58,7 +59,7 @@ pub const CompartmentAllocator = struct {
         const mask = @as(u16, 1) << @intCast(token.id & 0xF);
         if (self.used_mask & mask != 0) {
             if (self.detectMpk()) {
-                _ = pkey_free(@intCast(token.id)) catch {};
+                _ = os_abs.pkeyFree(@intCast(token.id)) catch {};
             }
             self.used_mask &= ~mask;
         }
@@ -67,50 +68,3 @@ pub const CompartmentAllocator = struct {
 
 /// Global compartment allocator for the system.
 pub var global_allocator = CompartmentAllocator.init();
-
-pub const PkeyError = error{
-    InvalidArgument,
-    NoSpace,
-    SystemNotSupported,
-    Unexpected,
-};
-
-pub const PkeyFreeError = error{
-    InvalidArgument,
-    SystemNotSupported,
-    Unexpected,
-};
-
-/// Wrapper for pkey_alloc syscall on Linux
-fn pkey_alloc(flags: u32, access_rights: u32) PkeyError!i32 {
-    if (builtin.os.tag != .linux) @compileError("pkey_alloc is Linux-only");
-
-    const res = std.os.linux.syscall2(.pkey_alloc, flags, access_rights);
-    
-    if (std.os.linux.errno(res) != .SUCCESS) {
-        const err = std.os.linux.errno(res);
-        return switch (err) {
-            .INVAL => error.InvalidArgument,
-            .NOSPC => error.NoSpace,
-            .NOSYS => error.SystemNotSupported,
-            else => error.Unexpected,
-        };
-    }
-    return @intCast(res);
-}
-
-/// Wrapper for pkey_free syscall on Linux
-fn pkey_free(pkey: i32) PkeyFreeError!void {
-    if (builtin.os.tag != .linux) @compileError("pkey_free is Linux-only");
-
-    const res = std.os.linux.syscall1(.pkey_free, @as(u64, @intCast(pkey)));
-    
-    if (std.os.linux.errno(res) != .SUCCESS) {
-        const err = std.os.linux.errno(res);
-        return switch (err) {
-            .INVAL => error.InvalidArgument,
-            .NOSYS => error.SystemNotSupported,
-            else => error.Unexpected,
-        };
-    }
-}

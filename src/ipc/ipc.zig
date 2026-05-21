@@ -7,8 +7,8 @@ const std = @import("std");
 const posix = std.posix;
 const atomic = std.atomic;
 const mem = std.mem;
+const crc = std.hash.crc;
 const hw = @import("../hw/mod.zig");
-const hajr = @import("../root.zig").hajr;
 const sandbox = @import("../core/sandbox.zig");
 
 // ============================================================================
@@ -23,21 +23,7 @@ const sandbox = @import("../core/sandbox.zig");
 // - Sequence numbers detect replay attacks and data corruption
 // - Atomic operations ensure consistency without locking
 
-pub const SandboxTier = enum(u8) {
-    root = 0,
-    trusted = 1,
-    untrusted = 2,
-    isolated = 3,
-
-    pub fn getProtectionKey(tier: SandboxTier) u32 {
-        return switch (tier) {
-            .root => 0,
-            .trusted => 1,
-            .untrusted => 2,
-            .isolated => 3,
-        };
-    }
-};
+pub const SandboxTier = sandbox.SandboxTier;
 
 /// Message types for IPC
 pub const IpcMessageType = enum(u32) {
@@ -194,7 +180,7 @@ pub const IpcRing = struct {
             .source_id = source_id,
             .target_id = target_id,
             .timestamp = hw.posix_io.monotonicTimestamp(),
-            .checksum = 0, // Would calculate CRC32
+            .checksum = crc.Crc32.hash(payload),
             .reserved = 0,
         };
         
@@ -232,6 +218,12 @@ pub const IpcRing = struct {
         // Advance tail AFTER data has been safely copied
         ring.tail.store(tail + 1, .release);
         
+        // Validate CRC32 checksum over payload
+        const calculated = crc.Crc32.hash(buf.items[0..header.payload_len]);
+        if (header.checksum != 0 and header.checksum != calculated) {
+            return error.ChecksumMismatch;
+        }
+        
         return header;
     }
     
@@ -253,6 +245,12 @@ pub const IpcRing = struct {
         // Mark slot free then advance tail (non-blocking: store, not fetchAdd)
         slot.occupied.store(false, .release);
         ring.tail.store(tail + 1, .release);
+        
+        // Validate CRC32 checksum over payload
+        const calculated = crc.Crc32.hash(buf.items[0..header.payload_len]);
+        if (header.checksum != 0 and header.checksum != calculated) {
+            return null;
+        }
         
         return header;
     }

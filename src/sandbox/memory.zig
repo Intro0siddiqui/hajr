@@ -6,8 +6,8 @@ const router = @import("router.zig");
 // Hajr Arena Layout Manager (Task 1)
 // ============================================================================
 
-/// Safe maximum alignment for OS-agnostic page alignment (64KB)
-pub const PAGE_SIZE: usize = 65536;
+/// Platform page size (4KB on x86_64 Linux, 16KB on ARM64)
+pub const PAGE_SIZE: usize = std.heap.page_size_min;
 
 pub const SegmentInfo = struct { offset: usize, size: usize };
 
@@ -66,9 +66,9 @@ pub const SandboxMemory = struct {
         const token = try hw.compartment.global_allocator.alloc();
         errdefer hw.compartment.global_allocator.free(token);
 
-        // 2. Allocate memory
-        const mapped = try std.heap.page_allocator.alignedAlloc(u8, std.mem.Alignment.fromByteUnits(PAGE_SIZE), total_size);
-        errdefer std.heap.page_allocator.free(mapped);
+        // 2. Allocate memory via OS abstraction
+        const mapped = try hw.os.memAlloc(total_size);
+        errdefer hw.os.memFree(mapped);
 
         // 3. Apply hardware protection to the entire region
         try hw.applyProtectionToRegion(mapped.ptr, total_size, token.id);
@@ -90,8 +90,8 @@ pub const SandboxMemory = struct {
         // 1. Free hardware protection key
         hw.compartment.global_allocator.free(.{ .id = self.protection_key });
 
-        // 2. Free memory
-        std.heap.page_allocator.free(slice);
+        // 2. Free memory via OS abstraction
+        hw.os.memFree(slice);
         std.heap.page_allocator.destroy(self);
     }
 pub const SegmentType = enum {

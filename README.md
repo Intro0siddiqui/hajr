@@ -1,8 +1,10 @@
 # Hajr Sandbox & IPC Layer
 
-Hajr is a modern browser sandbox and Inter-Process Communication (IPC) subsystem designed for the Zawra browser architecture. 
+Hajr is a hardware-enforced sandbox and zero-copy IPC layer — the isolation substrate for the Zawra browser. 
 
-Conceptually, it serves the same purpose as **Chrome's Sandbox and Mojo IPC**, but rebuilt from the ground up using modern hardware techniques. Instead of relying on slow OS-level process isolation and heavy serialization overhead, Hajr leverages **hardware-enforced memory isolation** and **zero-copy data pipelines** to achieve sub-5ns IPC latency.
+It serves the same role as **Chrome's Sandbox + Mojo IPC**, but replaces OS process boundaries with MPK/MTE hardware keys and lock-free ring buffers for sub-5ns IPC.
+
+> **Note:** Hajr is the *isolation layer only*. Browser-level subsystems like networking (`z-net`), storage (`BrowserDB`), and rendering (`Gecko`) are independent components built *on top* of Hajr. They are not part of Hajr itself and live in their own repositories.
 
 ## How It Works
 
@@ -26,7 +28,7 @@ Hajr enforces a strict 4-tier security model using protection keys:
 | :--- | :--- | :--- |
 | **0** | **Root** | System initialization and global policy management. |
 | **1** | **Trusted** | Safe subsystems like the Network stack (z-net) and Storage (BrowserDB). |
-| **2** | **Untrusted** | Dangerous components like Rendering (Servo) and JavaScript execution (SpiderMonkey). |
+| **2** | **Untrusted** | Dangerous components like Rendering (Gecko) and JavaScript execution (SpiderMonkey). |
 | **3** | **Isolated** | Highly restricted 3rd-party plugins and external handles. |
 
 ## Developer Guide
@@ -46,4 +48,4 @@ zig build test
 *   `src/core/`: The core sandbox architecture and hardware key management.
 *   `src/ipc/`: The lock-free, zero-copy ring buffer implementation.
 *   `src/hw/`: The Hardware Abstraction Layer mapping Zig to raw MPK/MTE operations.
-*   `src/network/` & `src/storage/`: High-performance, sandboxed subsystems.
+*   `src/sandbox/`: Sandbox runtime — memory layout, event routing, poison protocol, SpiderMonkey FFI bindings.

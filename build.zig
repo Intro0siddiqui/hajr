@@ -22,7 +22,7 @@ pub fn build(b: *Build) void {
     const ffi_lib = b.addLibrary(.{
         .name = "hajr_ffi",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ffi/spidermonkey.zig"),
+            .root_source_file = b.path("src/ffi_export.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -34,7 +34,7 @@ pub fn build(b: *Build) void {
     const example = b.addExecutable(.{
         .name = "simple_sandbox",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/examples/simple_sandbox.zig"),
+            .root_source_file = b.path("src/example_root.zig"),
             .target = target,
             .optimize = optimize,
         }),

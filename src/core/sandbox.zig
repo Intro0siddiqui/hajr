@@ -18,10 +18,15 @@ const hw = @import("../hw/mod.zig");
 // Hajr implements a multi-tier sandbox architecture where components are isolated
 // using hardware memory protection instead of OS process boundaries.
 //
+// The tiers below describe how a browser built on Hajr would assign its components,
+// but Hajr itself only provides the isolation primitives and IPC transport.
+// Browser-level subsystems (networking, storage, rendering) are independent
+// components that plug into these tiers via the event router.
+//
 // Tier 0 (Root): System initialization and policy management
-// Tier 1 (Trusted): Network stack (z-net), Storage (BrowserDB)
-// Tier 2 (Untrusted): Rendering (Servo), JavaScript (SpiderMonkey)
-// Tier 3 (Isolated): Plugin processes, external handles
+// Tier 1 (Trusted): Browser-level trusted subsystems (e.g. network, storage)
+// Tier 2 (Untrusted): Dangerous components like JavaScript execution
+// Tier 3 (Isolated): Highly restricted 3rd-party plugins, external handles
 //
 // Communication between tiers happens through hardened ring buffers with
 // sequence-validated atomic operations. Hardware keys enforce memory access
@@ -51,14 +56,8 @@ pub const HardwareProtection = struct {
     pub fn detect() !Mechanism {
         switch (builtin.cpu.arch) {
             .x86_64, .x86 => {
-                // Check CPUID for MPK support (Leaf 7, EBX bits 3 & 4)
-                // Bit 3: PKU (Protection Keys for User-mode pages)
-                // Bit 4: OSPKE (OS Protection Keys Enable)
-                const cpuid = try std.arch.x86.cpuid(7, 0);
-                const has_pku = (cpuid.ebx & (1 << 3)) != 0;
-                const has_ospke = (cpuid.ebx & (1 << 4)) != 0;
-                
-                if (has_pku and has_ospke) {
+                // Check if the current CPU supports PKU via compile-time feature detection
+                if (builtin.cpu.features.isEnabled("pku")) {
                     if (hw.compartment.global_allocator.detectMpk()) {
                         return .intel_mpk;
                     }
@@ -149,7 +148,7 @@ pub const HardenedRingBuffer = struct {
     pub fn create(
         size: usize,
         protection_key: HardwareProtection.Key,
-        tier: SandboxTier,
+        _: SandboxTier,
     ) !HardenedRingBuffer {
         // Validate size is power of 2
         if (size == 0 or (size & (size - 1)) != 0) {
@@ -162,25 +161,11 @@ pub const HardenedRingBuffer = struct {
         // Calculate total memory needed
         const total_size = RingConfig.METADATA_SIZE + actual_size;
         
-        // Create anonymous memory mapping
-        const prot = switch (tier) {
-            .trusted => posix.PROT{ .READ = true, .WRITE = true },
-            .untrusted => posix.PROT{ .READ = true, .WRITE = true },
-            .isolated => posix.PROT{ .READ = true },
-            .root => posix.PROT{ .READ = true, .WRITE = true },
-        };
-        
-        const fd = try posix.mmap(
-            null,
-            total_size,
-            prot,
-            posix.MAP{ .TYPE = .PRIVATE, .ANONYMOUS = true },
-            -1,
-            0,
-        );
+        // Create anonymous memory mapping via OS abstraction
+        const memory = try hw.os.memAlloc(total_size);
         
         // Initialize metadata
-        const metadata = @as(*RingMetadata, @ptrCast(@alignCast(fd.ptr)));
+        const metadata = @as(*RingMetadata, @ptrCast(@alignCast(memory.ptr)));
         metadata.write_index.store(0, .release);
         metadata.read_index.store(0, .release);
         metadata.sequence.store(0, .release);
@@ -188,9 +173,9 @@ pub const HardenedRingBuffer = struct {
         metadata.poison_cause.store(0, .release);
         
         return HardenedRingBuffer{
-            .memory = fd,
+            .memory = memory,
             .metadata = metadata,
-            .data = @ptrFromInt(@intFromPtr(fd.ptr) + RingConfig.METADATA_SIZE),
+            .data = @ptrFromInt(@intFromPtr(memory.ptr) + RingConfig.METADATA_SIZE),
             .size = actual_size,
             .protection_key = protection_key,
             .fd = null,
@@ -266,7 +251,7 @@ pub const HardenedRingBuffer = struct {
     
     /// Destroy the ring buffer and release resources
     pub fn destroy(ring: *HardenedRingBuffer) void {
-        posix.munmap(ring.memory);
+        hw.os.memFree(ring.memory);
         if (ring.fd) |fd| {
             hw.posix_io.fileClose(fd);
         }
@@ -417,15 +402,8 @@ pub const Arena = struct {
     
     /// Create a new protected memory arena
     pub fn create(size: usize, protection_key: HardwareProtection.Key) !Arena {
-        // Allocate memory
-        const memory = try posix.mmap(
-            null,
-            size,
-            .{ .READ = true, .WRITE = true },
-            .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
-            -1,
-            0,
-        );
+        // Allocate memory via OS abstraction
+        const memory = try hw.os.memAlloc(size);
         
         return Arena{
             .memory = memory,
@@ -443,7 +421,7 @@ pub const Arena = struct {
     
     /// Destroy the arena
     pub fn destroy(arena: *Arena) void {
-        posix.munmap(arena.memory);
+        hw.os.memFree(arena.memory);
     }
 };
 

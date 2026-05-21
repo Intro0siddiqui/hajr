@@ -242,25 +242,26 @@ pub const ObservableRing = struct {
 
 var global_recovery_manager: ?*RecoveryManager = null;
 
-fn hardwareFaultCallback(sig: i32, info: *const std.posix.siginfo_t) callconv(.C) void {
-    _ = sig;
-    const fault_addr = @intFromPtr(info.fields.sigfault.addr);
-    
+fn hardwareFaultHandler(info: hw.os.FaultInfo) callconv(.C) void {
+    const fault_addr = info.address;
+
     if (global_recovery_manager) |rm| {
-        // Find which sandbox this address belongs to
         for (rm.observer.observables.items) |ring| {
             const base = @intFromPtr(ring.base);
             if (fault_addr >= base and fault_addr < base + ring.size) {
                 poisonRing(ring.metadata, .out_of_bounds);
-                // We can't call recover() directly here because it's not signal-safe (uses allocator etc)
-                // but we set the poison bit, and the next poll() will handle it.
                 return;
             }
         }
     }
-    
-    // If we couldn't identify the sandbox or no RM, just exit to be safe
+
     std.posix.exit(1);
+}
+
+/// Register the hardware fault handler into the exception pipeline.
+/// Must be called once during initialization.
+pub fn init() void {
+    hw.exception.registerCallback(hardwareFaultHandler);
 }
 
 /// Sandbox recovery manager
@@ -333,16 +334,19 @@ pub const RecoveryManager = struct {
     
     /// Kill sandbox thread
     fn killThread(recovery: *RecoveryManager, sandbox_id: u64) void {
-        // Find the observable ring for this sandbox
         for (recovery.observer.observables.items) |ring| {
             if (ring.sandbox_id == sandbox_id) {
                 if (ring.thread_handle) |thread| {
-                    // For crash-only: terminate thread immediately
-                    // No cleanup, no graceful shutdown
-                    thread.detach();
-                    // Note: thread will be killed when process exits
-                    // For true crash-only, we would use pthread_cancel
-                    // or terminate the process
+                    if (builtin.os.tag == .linux and !std.Thread.use_pthreads) {
+                        _ = std.os.linux.tgkill(
+                            std.os.linux.getpid(),
+                            @as(std.os.linux.pid_t, @intCast(thread.getHandle())),
+                            std.os.linux.SIG.KILL,
+                        );
+                    } else {
+                        thread.detach();
+                    }
+                    thread.join();
                 }
                 return;
             }

@@ -66,7 +66,7 @@ export fn __zawra_ring_read(out_ext_buf: *SMExternalBuffer) callconv(.c) i32 {
     out_ext_buf.data = raw_ptr;
     out_ext_buf.length = contiguous_len;
     out_ext_buf.free_func = null; // No custom free function; memory is managed by the ring
-    out_ext_buf.user_data = undefined;
+    out_ext_buf.user_data = @ptrCast(@constCast(config));
 
     return 1; // Success
 }
