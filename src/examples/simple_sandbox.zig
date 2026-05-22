@@ -46,7 +46,7 @@ pub fn main() !void {
     // Create IPC channel between sandboxes
     std.debug.print("\nCreating IPC channel...\n", .{});
     
-    const channel = try ipc.IpcChannel.create(
+    var channel = try ipc.IpcChannel.create(
         trusted.id,
         untrusted.id,
         sandbox.SandboxTier.getProtectionKey(.trusted),
@@ -67,10 +67,10 @@ pub fn main() !void {
     std.debug.print("  Sent: \"{s}\"\n", .{test_message});
     
     // Receive message in untrusted sandbox
-    var recv_buf = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer recv_buf.deinit();
+    var recv_buf: std.ArrayListUnmanaged(u8) = .{ .items = &.{}, .capacity = 0 };
+    defer recv_buf.deinit(std.heap.page_allocator);
     
-    const header = try channel.recvMsg(&recv_buf);
+    const header = try channel.recvMsg(std.heap.page_allocator, &recv_buf);
     std.debug.print("  Received ({} bytes, seq={}): \"{s}\"\n", .{
         header.payload_len, header.sequence, recv_buf.items
     });
