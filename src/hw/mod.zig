@@ -55,35 +55,14 @@ pub fn setKeyPermission(key: u32, perm: Permission) void {
 
 /// x86_64 Linux Implementation using Intel MPK (Memory Protection Keys)
 const X86_64_Linux = struct {
-    /// Write to PKRU register using WRPKRU instruction.
-    /// WRPKRU requires EAX = value, ECX = 0, EDX = 0.
     pub fn writeProtectionKey(value: u32) void {
         if (!compartment.global_allocator.detectMpk()) return;
-        if (comptime !builtin.cpu.features.isEnabled(@intFromEnum(std.Target.x86.Feature.pku))) return;
-        asm volatile (
-            \\xorl %%ecx, %%ecx
-            \\xorl %%edx, %%edx
-            \\wrpkru
-            :
-            : [val] "{eax}" (value)
-            : .{ .ecx = true, .edx = true, .memory = true }
-        );
+        haj_wrpkru(value);
     }
 
-    /// Read from PKRU register using RDPKRU instruction.
-    /// RDPKRU requires ECX = 0, returns value in EAX (and 0 in EDX).
     pub fn readProtectionKey() u32 {
         if (!compartment.global_allocator.detectMpk()) return 0;
-        if (comptime !builtin.cpu.features.isEnabled(@intFromEnum(std.Target.x86.Feature.pku))) return 0;
-        var value: u32 = undefined;
-        asm volatile (
-            \\xorl %%ecx, %%ecx
-            \\rdpkru
-            : [ret] "={eax}" (value)
-            :
-            : .{ .ecx = true, .edx = true }
-        );
-        return value;
+        return haj_rdpkru();
     }
 
     pub fn setKeyPermission(key: u32, perm: Permission) void {
