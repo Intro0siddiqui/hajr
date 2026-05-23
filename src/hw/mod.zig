@@ -9,7 +9,7 @@ const builtin = @import("builtin");
 pub const pointer = @import("pointer.zig");
 pub const compartment = @import("compartment.zig");
 pub const exception = @import("exception.zig");
-pub const posix_io = @import("posix.zig");
+pub const posix_io = if (builtin.os.tag == .windows) @import("os_abstraction.zig") else @import("posix.zig");
 pub const os = @import("os_abstraction.zig");
 pub const windows = @import("windows.zig");
 
@@ -90,7 +90,7 @@ const X86_64_Linux = struct {
 
     pub fn applyProtectionToRegion(ptr: [*]u8, len: usize, key: u32) !void {
         if (compartment.global_allocator.detectMpk()) {
-            const prot = std.os.linux.PROT{ .READ = true, .WRITE = true };
+            const prot = std.posix.PROT{ .READ = true, .WRITE = true };
             try os.pkeyMprotect(ptr, len, prot, key);
         } else {
             return Fallback.applyProtectionToRegion(ptr, len, key);
@@ -169,26 +169,16 @@ const AArch64_Linux = struct {
     }
 
     pub fn applyProtectionToRegion(ptr: [*]u8, len: usize, key: u32) !void {
-        const prot = std.os.linux.PROT{ .READ = true, .WRITE = true };
-        const PROT_MTE: u32 = 0x20;
-        const prot_val: u32 = @as(u32, @bitCast(prot)) | PROT_MTE;
-
-        const res = std.os.linux.syscall3(
-            .mprotect,
-            @intFromPtr(ptr),
-            len,
-            prot_val,
-        );
-        if (std.os.linux.errno(res) != .SUCCESS) return error.ProtectionFailed;
-
-        // 2. Tag the memory granules
+        // 1. Set standard memory protection via os layer
+        try os.memProtect(ptr, len, true, true);
+        // 2. Apply MTE tag to memory granules
         // MTE granule is 16 bytes. The tag is stored in bits [59:56] of the pointer.
         var addr = @intFromPtr(ptr);
         const end_addr = addr + len;
         const tag = @as(u64, key & 0xF) << 56;
 
         while (addr < end_addr) {
-            // Combine address with tag (keeping top-byte-ignore bits if any, but usually we just set the tag)
+            // Combine address with tag
             const tagged_addr = (addr & 0x00FFFFFFFFFFFFFF) | tag;
             asm volatile (
                 \\stg %[addr], [%[addr]]
@@ -204,29 +194,20 @@ const AArch64_Linux = struct {
 /// AArch64 Portable Implementation (macOS, FreeBSD, etc.) — no MTE support
 const AArch64_Portable = struct {
     pub fn writeProtectionKey(value: u32) void {
-        asm volatile (
-            \\msr tco, %[val]
-            :
-            : [val] "r" (@as(u64, value))
-            : "memory"
-        );
+        _ = value;
+        // No-op: Apple Silicon CPUs do not implement MTE.
+        // The tco (Tag Check Override) register used on AArch64 Linux
+        // is not available, and there is no PKRU equivalent on AArch64.
     }
 
     pub fn readProtectionKey() u32 {
-        var value: u64 = undefined;
-        asm volatile (
-            \\mrs %[ret], tco
-            : [ret] "=r" (value)
-        );
-        return @as(u32, @intCast(value));
+        return 0;
     }
 
     pub fn setKeyPermission(key: u32, perm: Permission) void {
         _ = key;
         _ = perm;
         // AArch64 Portable no-op: MTE is not available outside Linux.
-        // Permission changes are a no-op since there is no PKRU-style
-        // global register on AArch64, and MTE is Linux-specific.
     }
 
     pub fn applyProtectionToRegion(ptr: [*]u8, len: usize, key: u32) !void {
@@ -254,10 +235,6 @@ const Fallback = struct {
 
     pub fn applyProtectionToRegion(ptr: [*]u8, len: usize, key: u32) !void {
         _ = key;
-
-        if (@hasDecl(std.posix, "mprotect")) {
-            const prot = std.posix.PROT{ .READ = true, .WRITE = true };
-            try std.posix.mprotect(ptr[0..len], prot);
-        }
+        try os.memProtect(ptr, len, true, true);
     }
 };

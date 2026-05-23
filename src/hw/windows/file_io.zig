@@ -6,6 +6,56 @@
 const std = @import("std");
 const windows = std.os.windows;
 
+// Win32 Constants
+const GENERIC_READ: windows.DWORD = 0x80000000;
+const GENERIC_WRITE: windows.DWORD = 0x40000000;
+const FILE_SHARE_READ: windows.DWORD = 0x00000001;
+const OPEN_ALWAYS: windows.DWORD = 4;
+const FILE_ATTRIBUTE_NORMAL: windows.DWORD = 0x00000080;
+const FILE_BEGIN: windows.DWORD = 0;
+
+// Win32 API Functions
+extern "kernel32" fn CreateFileW(
+    lpFileName: windows.LPCWSTR,
+    dwDesiredAccess: windows.DWORD,
+    dwShareMode: windows.DWORD,
+    lpSecurityAttributes: ?*anyopaque,
+    dwCreationDisposition: windows.DWORD,
+    dwFlagsAndAttributes: windows.DWORD,
+    hTemplateFile: ?windows.HANDLE,
+) callconv(.winapi) windows.HANDLE;
+
+extern "kernel32" fn CloseHandle(
+    hObject: windows.HANDLE,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn SetFilePointerEx(
+    hFile: windows.HANDLE,
+    liDistanceToMove: windows.LARGE_INTEGER,
+    lpNewFilePointer: ?*windows.LARGE_INTEGER,
+    dwMoveMethod: windows.DWORD,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn WriteFile(
+    hFile: windows.HANDLE,
+    lpBuffer: [*]const u8,
+    nNumberOfBytesToWrite: windows.DWORD,
+    lpNumberOfBytesWritten: ?*windows.DWORD,
+    lpOverlapped: ?*anyopaque,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn ReadFile(
+    hFile: windows.HANDLE,
+    lpBuffer: [*]u8,
+    nNumberOfBytesToRead: windows.DWORD,
+    lpNumberOfBytesRead: ?*windows.DWORD,
+    lpOverlapped: ?*anyopaque,
+) callconv(.winapi) windows.BOOL;
+
+extern "kernel32" fn SetEndOfFile(
+    hFile: windows.HANDLE,
+) callconv(.winapi) windows.BOOL;
+
 /// Platform-specific handle type.
 pub const OsHandle = windows.HANDLE;
 
@@ -16,38 +66,38 @@ pub const INVALID_HANDLE: OsHandle = windows.INVALID_HANDLE_VALUE;
 pub fn fileOpen(path: []const u8) !OsHandle {
     const path_w = try std.unicode.utf8ToUtf16LeAllocZ(std.heap.page_allocator, path);
     defer std.heap.page_allocator.free(path_w);
-    const handle = windows.CreateFileW(
+    const handle = CreateFileW(
         path_w,
-        windows.GENERIC_READ | windows.GENERIC_WRITE,
-        windows.FILE_SHARE_READ,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ,
         null,
-        windows.OPEN_ALWAYS,
-        windows.FILE_ATTRIBUTE_NORMAL,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
         null,
     );
-    if (handle == windows.INVALID_HANDLE_VALUE) return error.FileOpenFailed;
+    if (handle == INVALID_HANDLE) return error.FileOpenFailed;
     return handle;
 }
 
 /// Close a file handle.
 pub fn fileClose(handle: OsHandle) void {
-    _ = windows.CloseHandle(handle);
+    _ = CloseHandle(handle);
 }
 
 /// Truncate a file to a given size.
 pub fn fileTruncate(handle: OsHandle, size: u64) !void {
     const distance: windows.LARGE_INTEGER = @intCast(size);
-    _ = windows.SetFilePointerEx(handle, distance, null, windows.FILE_BEGIN);
-    const ok = windows.SetEndOfFile(handle);
+    _ = SetFilePointerEx(handle, distance, null, FILE_BEGIN);
+    const ok = SetEndOfFile(handle);
     if (!ok) return error.TruncateFailed;
 }
 
 /// Write data to a file at a given offset. Returns bytes written.
 pub fn fileWrite(handle: OsHandle, data: []const u8, offset: u64) !u64 {
     const distance: windows.LARGE_INTEGER = @intCast(offset);
-    _ = windows.SetFilePointerEx(handle, distance, null, windows.FILE_BEGIN);
+    _ = SetFilePointerEx(handle, distance, null, FILE_BEGIN);
     var written: windows.DWORD = 0;
-    const ok = windows.WriteFile(handle, data, &written, null);
+    const ok = WriteFile(handle, data.ptr, @intCast(data.len), &written, null);
     if (!ok) return error.WriteFailed;
     return written;
 }
@@ -55,9 +105,9 @@ pub fn fileWrite(handle: OsHandle, data: []const u8, offset: u64) !u64 {
 /// Read data from a file at a given offset. Returns bytes read.
 pub fn fileRead(handle: OsHandle, buffer: []u8, offset: u64) !u64 {
     const distance: windows.LARGE_INTEGER = @intCast(offset);
-    _ = windows.SetFilePointerEx(handle, distance, null, windows.FILE_BEGIN);
+    _ = SetFilePointerEx(handle, distance, null, FILE_BEGIN);
     var read: windows.DWORD = 0;
-    const ok = windows.ReadFile(handle, buffer, &read, null);
+    const ok = ReadFile(handle, buffer.ptr, @intCast(buffer.len), &read, null);
     if (!ok) return error.ReadFailed;
     return read;
 }

@@ -64,7 +64,7 @@ pub const HardwareProtection = struct {
                 }
                 return .software_fallback;
             },
-            .aarch64 => return .arm_mte,
+            .aarch64 => return if (builtin.os.tag == .linux) .arm_mte else .software_fallback,
             else => return .software_fallback,
         }
     }
@@ -124,7 +124,7 @@ pub const RingMetadata = extern struct {
 /// Hardened ring buffer for IPC between sandbox tiers
 pub const HardenedRingBuffer = struct {
     /// Memory-mapped ring buffer
-    memory: []align(4096) u8,
+    memory: []align(std.heap.page_size_min) u8,
     
     /// Metadata region at the start
     metadata: *RingMetadata,
@@ -396,7 +396,7 @@ pub const SandboxContext = struct {
 
 /// Protected memory arena
 pub const Arena = struct {
-    memory: []align(4096) u8,
+    memory: []align(std.heap.page_size_min) u8,
     protection_key: HardwareProtection.Key,
     size: usize,
     

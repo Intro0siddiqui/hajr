@@ -35,17 +35,24 @@ Hajr enforces a strict 4-tier security model using protection keys:
 
 ### Prerequisites
 *   **Zig `0.16.0`** is strictly required.
-*   The project relies on specific POSIX and OS-level interfaces, with portability currently focused on Linux/x86_64 and AArch64.
+*   The project supports **Linux** (`x86_64`, `aarch64`), **Windows** (`x86_64`), and **macOS** (`x86_64`, `aarch64`).
+*   For cross-platform behavior, hardware-assisted vs. software-fallback isolation, and OS-specific details, see [PORTABILITY.md](file:///home/Intro/spectre-enviroment/hajr/PORTABILITY.md).
 
 ### Building & Testing
-To run the comprehensive test suite, which validates the hardware sandbox boundaries, the IPC ring buffers, and the memory arenas:
+To run the comprehensive test suite, which validates the sandbox boundaries, the IPC ring buffers, and the memory arenas:
 
 ```bash
 zig build test
 ```
 
+To cross-compile for other platforms (e.g. Windows or macOS):
+```bash
+zig build -Dtarget=x86_64-windows
+zig build -Dtarget=aarch64-macos
+```
+
 ### Codebase Organization
-*   `src/core/`: The core sandbox architecture and hardware key management.
+*   `src/core/`: The core sandbox architecture and hardware/software fallback key management.
 *   `src/ipc/`: The lock-free, zero-copy ring buffer implementation.
-*   `src/hw/`: The Hardware Abstraction Layer mapping Zig to raw MPK/MTE operations.
+*   `src/hw/`: The Hardware Abstraction Layer mapping Zig to raw MPK/MTE operations and OS-specific fallbacks.
 *   `src/sandbox/`: Sandbox runtime — memory layout, event routing, poison protocol, SpiderMonkey FFI bindings.

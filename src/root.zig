@@ -14,5 +14,6 @@ test {
     _ = @import("ipc/ipc.zig");
     _ = @import("tests/integration.zig");
     _ = @import("tests/hardening.zig");
+    _ = @import("tests/guard_pages.zig");
     @import("std").testing.refAllDecls(@This());
 }

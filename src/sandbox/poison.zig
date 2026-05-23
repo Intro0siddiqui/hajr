@@ -204,7 +204,7 @@ pub const ObservableRing = struct {
     metadata: *PoisonableRingMetadata,
     
     /// Ring base pointer (for unmapping on poison)
-    base: [*]align(4096) u8,
+    base: [*]align(std.heap.page_size_min) u8,
     
     /// Ring size
     size: usize,
@@ -277,7 +277,7 @@ pub const RecoveryManager = struct {
     observer: *Tier0Observer,
     
     /// Memory unmapping function
-    unmapFn: *const fn (base: [*]align(4096) u8, size: usize) void,
+    unmapFn: *const fn (base: [*]align(std.heap.page_size_min) u8, size: usize) void,
     
     /// Key release function
     releaseKeyFn: *const fn (key: u32) void,
@@ -291,7 +291,7 @@ pub const RecoveryManager = struct {
     /// Create recovery manager
     pub fn init(
         observer: *Tier0Observer,
-        unmap_fn: *const fn ([*]align(4096) u8, usize) void,
+        unmap_fn: *const fn ([*]align(std.heap.page_size_min) u8, usize) void,
         release_key_fn: *const fn (u32) void,
         create_sandbox_fn: *const fn () anyerror!u64,
     ) RecoveryManager {
@@ -343,10 +343,10 @@ pub const RecoveryManager = struct {
                             @as(std.os.linux.pid_t, @intCast(thread.getHandle())),
                             std.os.linux.SIG.KILL,
                         );
+                        thread.join();
                     } else {
                         thread.detach();
                     }
-                    thread.join();
                 }
                 return;
             }
@@ -391,7 +391,7 @@ pub const RecoveryManager = struct {
 // ============================================================================
 
 /// Default memory unmapping function
-pub fn defaultUnmap(base: [*]align(4096) u8, size: usize) void {
+pub fn defaultUnmap(base: [*]align(std.heap.page_size_min) u8, size: usize) void {
     hw.os.memFree(base[0..size]);
 }
 

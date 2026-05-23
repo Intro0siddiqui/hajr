@@ -6,6 +6,19 @@
 const std = @import("std");
 const windows = std.os.windows;
 
+// Win32 Constants
+const STATUS_ACCESS_VIOLATION = 0xC0000005;
+const EXCEPTION_CONTINUE_SEARCH = 0;
+const EXCEPTION_CONTINUE_EXECUTION = -1;
+
+// Win32 API Functions
+extern "kernel32" fn AddVectoredExceptionHandler(
+    First: windows.ULONG,
+    Handler: windows.VECTORED_EXCEPTION_HANDLER,
+) callconv(.winapi) ?windows.LPVOID;
+
+extern "kernel32" fn ExitProcess(uExitCode: windows.UINT) callconv(.winapi) noreturn;
+
 /// Information about a hardware memory fault.
 pub const FaultInfo = struct {
     /// The memory address that caused the fault.
@@ -25,15 +38,15 @@ var registered_handler: ?FaultHandlerFn = null;
 /// Uses AddVectoredExceptionHandler to catch EXCEPTION_ACCESS_VIOLATION.
 pub fn registerFaultHandler(handler: FaultHandlerFn) void {
     registered_handler = handler;
-    _ = windows.AddVectoredExceptionHandler(1, @ptrCast(vehAdapter));
+    _ = AddVectoredExceptionHandler(1, @ptrCast(vehAdapter));
 }
 
 /// VEH adapter function. Called by Windows when any exception occurs.
 /// Filters for EXCEPTION_ACCESS_VIOLATION (memory protection faults).
 fn vehAdapter(exception_info: *windows.EXCEPTION_POINTERS) callconv(.c) windows.LONG {
     const record = exception_info.ExceptionRecord;
-    if (record.ExceptionCode != windows.STATUS_ACCESS_VIOLATION) {
-        return windows.EXCEPTION_CONTINUE_SEARCH;
+    if (record.ExceptionCode != STATUS_ACCESS_VIOLATION) {
+        return EXCEPTION_CONTINUE_SEARCH;
     }
     const info = FaultInfo{
         .address = @intFromPtr(record.ExceptionInformation[1]),
@@ -42,7 +55,7 @@ fn vehAdapter(exception_info: *windows.EXCEPTION_POINTERS) callconv(.c) windows.
     };
     if (registered_handler) |h| {
         h(info);
-        return windows.EXCEPTION_CONTINUE_EXECUTION;
+        return EXCEPTION_CONTINUE_EXECUTION;
     }
-    windows.ExitProcess(1);
+    ExitProcess(1);
 }

@@ -3,12 +3,12 @@ const builtin = @import("builtin");
 const os_abstraction = @import("os_abstraction.zig");
 
 pub fn init() void {
-    if (builtin.os.tag != .linux) return;
+    if (builtin.os.tag == .windows) return;
 
     var sa: std.posix.Sigaction = .{
         .handler = .{ .sigaction = handleFault },
         .mask = std.posix.sigset_t{0},
-        .flags = std.posix.SA.SIGINFO | std.posix.SA.ONSTACK, // SIGINFO + alternate stack
+        .flags = std.posix.SA.SIGINFO | std.posix.SA.ONSTACK,
     };
 
     _ = std.posix.sigaction(std.posix.SIG.SEGV, &sa, null);
@@ -26,14 +26,23 @@ fn handleFault(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?*
     _ = ctx_ptr;
 
     if (fault_callback) |cb| {
-        const addr = @as(usize, @intFromPtr(info.fields.sigfault.addr));
+        const addr = extractFaultAddress(info);
         const fault_info = os_abstraction.FaultInfo{
             .address = addr,
-            .is_write = true, // Simplified
+            .is_write = true,
             .is_exec = false,
         };
         cb(fault_info);
     } else {
         std.process.exit(1);
+    }
+}
+
+fn extractFaultAddress(info: *const std.posix.siginfo_t) usize {
+    if (comptime builtin.os.tag == .linux) {
+        return @as(usize, @intFromPtr(info.fields.sigfault.addr));
+    } else {
+        // macOS and other POSIX: siginfo_t has si_addr as a direct field
+        return @intFromPtr(@field(info, "si_addr"));
     }
 }
