@@ -1,0 +1,30 @@
+# Woodpecker CI Configuration for Codeberg
+# Runs the full test suite and verifies cross-compilation across all target platforms.
+
+steps:
+  - name: build-and-test
+    image: alpine:3.19
+    commands:
+      # Install dependencies for downloading and unpacking Zig
+      - apk add --no-cache curl xz git
+      
+      # Download and install Zig 0.16.0
+      - curl -L https://ziglang.org/download/0.16.0/zig-linux-x86_64-0.16.0.tar.xz | tar -xJ -C /usr/local
+      - ln -s /usr/local/zig-linux-x86_64-0.16.0/zig /usr/local/bin/zig
+      - zig version
+
+      # 1. Run the test suite on host (Linux)
+      - zig build test --summary all
+
+      # 2. Verify Windows x86_64 cross-compilation
+      - zig build -Dtarget=x86_64-windows
+
+      # 3. Verify macOS aarch64 (Apple Silicon) cross-compilation
+      - zig build -Dtarget=aarch64-macos
+
+      # 4. Verify macOS x86_64 (Intel Mac) cross-compilation
+      - zig build -Dtarget=x86_64-macos
+
+when:
+  event: [push, pull_request]
+  branch: main
