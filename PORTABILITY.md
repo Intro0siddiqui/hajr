@@ -66,19 +66,12 @@ Memory allocation and guard boundaries must be mapped onto hardware page boundar
 
 ---
 
-## 5. Libc-Decoupling Strategy
+## 5. Libc Strategy
 
-To maintain a lean footprint and simplify cross-compilation, Hajr **does not link libc** in any test binaries or target outputs.
+Hajr's library and FFI shared library targets do not link libc.
+However, test binaries **do link libc** (`link_libc` is enabled on the test step in `build.zig`) because `std.c.mprotect` is used for guard page probing — `std.posix.system.mprotect` does not exist in Zig 0.16's POSIX wrapper.
 
-### Syscall Isolation in Tests:
-* Tests that verify guard page security must probe page permissions directly.
-* In POSIX environments, do not call `std.c.mprotect` (which requires linking libc).
-* Instead, invoke raw direct system calls via `std.posix.system.mprotect` and check status via `std.posix.errno(rc)`:
-
-```zig
-const prot = std.posix.system.PROT{ .READ = true };
-const rc = std.posix.system.mprotect(page_ptr, page_size, prot);
-if (std.posix.errno(rc) != .SUCCESS) {
-    // Handle fault verification
-}
-```
+### Guard Page Probing in Tests:
+* Tests that verify guard page security probe page permissions via `std.c.mprotect`.
+* On Linux, the native `std.os.linux.mprotect` syscall wrapper is used as an alternative.
+* The test binary's `link_libc` flag ensures `std.c` symbols are available on all POSIX targets.

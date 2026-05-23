@@ -2,7 +2,7 @@
 
 Hajr is a hardware-enforced sandbox and zero-copy IPC layer — the isolation substrate for the Zawra browser. 
 
-It serves the same role as **Chrome's Sandbox + Mojo IPC**, but replaces OS process boundaries with MPK/MTE hardware keys and lock-free ring buffers for sub-5ns IPC.
+It serves the same role as **Chrome's Sandbox + Mojo IPC**, but replaces OS process boundaries with MPK/MTE hardware keys and lock-free ring buffers for ~200ns cross-thread IPC.
 
 > **Note:** Hajr is the *isolation layer only*. Browser-level subsystems like networking (`z-net`), storage (`BrowserDB`), and rendering (`Gecko`) are independent components built *on top* of Hajr. They are not part of Hajr itself and live in their own repositories.
 
@@ -42,7 +42,13 @@ Hajr enforces a strict 4-tier security model using protection keys:
 To run the comprehensive test suite, which validates the sandbox boundaries, the IPC ring buffers, and the memory arenas:
 
 ```bash
-zig build test
+zig build test      # compile test suite
+```
+
+To run the cross-thread IPC latency benchmark:
+
+```bash
+zig build benchmark   # compile and run
 ```
 
 To cross-compile for other platforms (e.g. Windows or macOS):
