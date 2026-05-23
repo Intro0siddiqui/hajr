@@ -57,9 +57,10 @@ pub const SandboxMemory = struct {
     size: usize,
     layout: ArenaLayout,
     protection_key: u32,
+    allocator: std.mem.Allocator,
 
     /// Allocate deterministic memory layout mapped by OS-agnostic page allocator
-    pub fn create(layout: ArenaLayout) !*SandboxMemory {
+    pub fn create(allocator: std.mem.Allocator, layout: ArenaLayout) !*SandboxMemory {
         const total_size = layout.totalSize();
 
         // 1. Allocate hardware protection key
@@ -73,12 +74,13 @@ pub const SandboxMemory = struct {
         // 3. Apply hardware protection to the entire region
         try hw.applyProtectionToRegion(mapped.ptr, total_size, token.id);
 
-        const arena = try std.heap.page_allocator.create(SandboxMemory);
+        const arena = try allocator.create(SandboxMemory);
         arena.* = SandboxMemory{
             .base = @alignCast(mapped.ptr),
             .size = total_size,
             .layout = layout,
             .protection_key = token.id,
+            .allocator = allocator,
         };
 
         return arena;
@@ -92,7 +94,7 @@ pub const SandboxMemory = struct {
 
         // 2. Free memory via OS abstraction
         hw.os.memFree(slice);
-        std.heap.page_allocator.destroy(self);
+        self.allocator.destroy(self);
     }
 pub const SegmentType = enum {
     inbound_ring,

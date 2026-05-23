@@ -108,7 +108,7 @@ pub const IpcRing = struct {
     /// Sequence counter
     sequence: atomic.Value(u64),
     /// Hardware protection key
-    protection_key: u32,
+    protection_key: sandbox.HardwareProtection.Key,
     /// Source tier
     source_tier: SandboxTier,
     /// Target tier
@@ -117,7 +117,7 @@ pub const IpcRing = struct {
     /// Create a new IPC ring
     pub fn create(
         slot_count: usize,
-        protection_key: u32,
+        protection_key: sandbox.HardwareProtection.Key,
         source_tier: SandboxTier,
         target_tier: SandboxTier,
     ) !*IpcRing {
@@ -262,6 +262,9 @@ pub const IpcRing = struct {
     
     /// Destroy ring
     pub fn destroy(ring: *IpcRing) void {
+        if (ring.protection_key.is_dynamic) {
+            hw.compartment.global_allocator.free(.{ .id = ring.protection_key.value });
+        }
         std.heap.page_allocator.free(ring.slots);
         std.heap.page_allocator.destroy(ring);
     }
@@ -281,8 +284,8 @@ pub const IpcChannel = struct {
     pub fn create(
         local_id: u64,
         remote_id: u64,
-        local_key: u32,
-        remote_key: u32,
+        local_key: sandbox.HardwareProtection.Key,
+        remote_key: sandbox.HardwareProtection.Key,
     ) !IpcChannel {
         const send_ring = try IpcRing.create(
             RING_SLOTS,
@@ -366,6 +369,11 @@ pub const IpcRouter = struct {
         };
     }
     
+    pub fn start(router: *IpcRouter) !void {
+        if (router.thread != null) return;
+        router.thread = try std.Thread.spawn(.{}, routerWorker, .{router});
+    }
+    
     fn routerWorker(router: *IpcRouter) void {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         defer buf.deinit(router.allocator);
@@ -424,7 +432,7 @@ pub const IpcRouter = struct {
 // ============================================================================
 
 test "IpcRing basic operations" {
-    const ring = try IpcRing.create(8, 1, .trusted, .untrusted);
+    const ring = try IpcRing.create(8, .{ .value = 1, .tier = 1 }, .trusted, .untrusted);
     defer ring.destroy();
     
     // Test send
@@ -441,7 +449,7 @@ test "IpcRing basic operations" {
 }
 
 test "IpcChannel bidirectional communication" {
-    var channel = try IpcChannel.create(1, 2, 1, 2);
+    var channel = try IpcChannel.create(1, 2, .{ .value = 1, .tier = 1 }, .{ .value = 2, .tier = 2 });
     defer channel.destroy();
     
     // Send message to the send ring
@@ -463,7 +471,7 @@ test "IpcRouter channel management" {
     var router = try IpcRouter.init(std.testing.allocator);
     defer router.destroy();
     
-    var channel = try IpcChannel.create(1, 2, 1, 2);
+    var channel = try IpcChannel.create(1, 2, .{ .value = 1, .tier = 1 }, .{ .value = 2, .tier = 2 });
     try router.registerChannel(1, &channel);
     
     try std.testing.expect(router.channels.count() == 1);

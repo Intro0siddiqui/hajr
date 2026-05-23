@@ -29,8 +29,14 @@ test "Boundary Audit Test" {
     hw.os.registerFaultHandler(testFaultHandler);
 
     // 2. Resolve keys for Tier 1 (Trusted) and Tier 3 (Isolated)
-    const tier1_key = sandbox.SandboxTier.trusted.getProtectionKey();
-    const tier3_key = sandbox.SandboxTier.isolated.getProtectionKey();
+    const tier1_key_struct = sandbox.SandboxTier.trusted.getProtectionKey();
+    const tier3_key_struct = sandbox.SandboxTier.isolated.getProtectionKey();
+    defer {
+        if (tier1_key_struct.is_dynamic) hw.compartment.global_allocator.free(.{ .id = tier1_key_struct.value });
+        if (tier3_key_struct.is_dynamic) hw.compartment.global_allocator.free(.{ .id = tier3_key_struct.value });
+    }
+    const tier1_key = tier1_key_struct.value;
+    const tier3_key = tier3_key_struct.value;
     tier1_key_global = tier1_key;
 
     // 3. Allocate memory regions
@@ -71,7 +77,7 @@ test "Fault-Injection Test" {
     const allocator = std.testing.allocator;
 
     // 1. Initialize an IpcRing (from src/ipc/ipc.zig)
-    const ring = try ipc.IpcRing.create(8, 0, .trusted, .untrusted);
+    const ring = try ipc.IpcRing.create(8, .{ .value = 0, .tier = 1, .is_dynamic = false }, .trusted, .untrusted);
     defer ring.destroy();
 
     // 2. Write a valid message to the ring

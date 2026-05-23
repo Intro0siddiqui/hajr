@@ -8,9 +8,9 @@ pub fn main() !void {
 
     // Initialize two IpcRing buffers (Producer -> Consumer)
     // We create two as requested, although we focus on one-way latency for precise measurement.
-    const ring1 = try ipc.IpcRing.create(ipc.RING_SLOTS, 1, .trusted, .untrusted);
+    const ring1 = try ipc.IpcRing.create(ipc.RING_SLOTS, .{ .value = 1, .tier = 1, .is_dynamic = false }, .trusted, .untrusted);
     defer ring1.destroy();
-    const ring2 = try ipc.IpcRing.create(ipc.RING_SLOTS, 2, .untrusted, .trusted);
+    const ring2 = try ipc.IpcRing.create(ipc.RING_SLOTS, .{ .value = 2, .tier = 2, .is_dynamic = false }, .untrusted, .trusted);
     defer ring2.destroy();
 
     const warmup_iters = 10_000;

@@ -73,6 +73,7 @@ pub const HardwareProtection = struct {
     pub const Key = struct {
         value: u32,
         tier: u8,
+        is_dynamic: bool = false,
     };
 };
 
@@ -273,12 +274,15 @@ pub const SandboxTier = enum(u8) {
     /// Tier 3: Isolated external processes
     isolated = 3,
 
-    pub fn getProtectionKey(tier: SandboxTier) u32 {
-        if (tier == .root) return 0;
+    pub fn getProtectionKey(tier: SandboxTier) HardwareProtection.Key {
+        if (tier == .root) return .{ .value = 0, .tier = @intFromEnum(tier), .is_dynamic = false };
         
         // Attempt to allocate/lookup a key dynamically
-        const token = hw.compartment.global_allocator.alloc() catch return @intFromEnum(tier);
-        return token.id;
+        if (hw.compartment.global_allocator.alloc()) |token| {
+            return .{ .value = token.id, .tier = @intFromEnum(tier), .is_dynamic = true };
+        } else |_| {
+            return .{ .value = @intFromEnum(tier), .tier = @intFromEnum(tier), .is_dynamic = false };
+        }
     }
 };
 
@@ -331,12 +335,12 @@ pub const SandboxContext = struct {
     };
     
     pub fn init(allocator: std.mem.Allocator, tier: SandboxTier, id: u64) !SandboxContext {
-        const key_value = tier.getProtectionKey();
+        const key = tier.getProtectionKey();
         
         return SandboxContext{
             .id = id,
             .tier = tier,
-            .protection_key = .{ .value = key_value, .tier = @intFromEnum(tier) },
+            .protection_key = key,
             .arenas = .empty,
             .rings_in = .empty,
             .rings_out = .empty,
@@ -386,6 +390,12 @@ pub const SandboxContext = struct {
         // Note: Rings are owned by the system, not the sandbox
         ctx.rings_in.deinit(ctx.allocator);
         ctx.rings_out.deinit(ctx.allocator);
+        
+        // Free dynamically allocated key
+        if (ctx.protection_key.is_dynamic) {
+            hw.compartment.global_allocator.free(.{ .id = ctx.protection_key.value });
+            ctx.protection_key.is_dynamic = false;
+        }
         
         // Join thread if running
         if (ctx.thread) |thread| {
@@ -601,7 +611,7 @@ pub const SandboxManager = struct {
         const ring = try manager.allocator.create(HardenedRingBuffer);
         ring.* = try HardenedRingBuffer.create(
             manager.config.ring_buffer_size,
-            .{ .value = key, .tier = @intFromEnum(target_tier) },
+            key,
             target_tier,
         );
         
@@ -669,6 +679,9 @@ pub const SandboxManager = struct {
         manager.sandboxes.deinit();
         
         for (manager.rings.items) |ring| {
+            if (ring.protection_key.is_dynamic) {
+                hw.compartment.global_allocator.free(.{ .id = ring.protection_key.value });
+            }
             ring.destroy();
             manager.allocator.destroy(ring);
         }

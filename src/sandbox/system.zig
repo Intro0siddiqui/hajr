@@ -120,7 +120,7 @@ pub const SandboxInstance = struct {
     /// Create a complete sandbox instance
     pub fn create(id: u64, layout: memory.ArenaLayout) !*SandboxInstance {
         // 1. Create memory arena
-        const arena = try memory.SandboxMemory.create(layout);
+        const arena = try memory.SandboxMemory.create(std.heap.page_allocator, layout);
         
         // 2. Extract ring metadata pointers
         const inbound_meta_ptr = arena.getRingMetadata(.inbound_ring) orelse @panic("No inbound ring");

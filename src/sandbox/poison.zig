@@ -109,6 +109,9 @@ pub const Tier0Observer = struct {
     /// Callback for when a sandbox is poisoned
     on_poison_callback: ?*const fn (sandbox_id: u64, cause: PoisonCause, record: PoisonRecord) void,
     
+    /// Configuration
+    config: Config,
+    
     /// Observer configuration
     pub const Config = struct {
         poll_interval_ns: u64 = 1000, // 1us polling interval
@@ -118,12 +121,12 @@ pub const Tier0Observer = struct {
     
     /// Create observer instance
     pub fn init(config: Config) !*Tier0Observer {
-        _ = config;
         const observer = try std.heap.page_allocator.create(Tier0Observer);
         observer.* = Tier0Observer{
             .observables = .empty,
             .poison_log = .empty,
             .on_poison_callback = null,
+            .config = config,
         };
         
         return observer;
@@ -179,14 +182,16 @@ pub const Tier0Observer = struct {
                 
                 try observer.poison_log.append(std.heap.page_allocator, record);
                 
-                // Limit log size
-                if (observer.poison_log.items.len > MAX_POISON_RECORDS) {
-                    _ = observer.poison_log.swapRemove(0);
+                // Limit log size (preserve chronological order)
+                while (observer.poison_log.items.len > observer.config.max_log_entries) {
+                    observer.poison_log.orderedRemove(0);
                 }
                 
                 // Trigger kill if enabled
-                if (observer.on_poison_callback) |callback| {
-                    callback(ring.sandbox_id, @enumFromInt(record.cause), record);
+                if (observer.config.enable_kill_on_poison) {
+                    if (observer.on_poison_callback) |callback| {
+                        callback(ring.sandbox_id, @enumFromInt(record.cause), record);
+                    }
                 }
                 
                 try poisoned.append(ring.sandbox_id);
@@ -248,7 +253,7 @@ fn hardwareFaultHandler(info: hw.os.FaultInfo) callconv(.C) void {
     if (global_recovery_manager) |rm| {
         for (rm.observer.observables.items) |ring| {
             const base = @intFromPtr(ring.base);
-            if (fault_addr >= base and fault_addr < base + ring.size) {
+            if (fault_addr >= base and fault_addr - base < ring.size) {
                 poisonRing(ring.metadata, .out_of_bounds);
                 return;
             }
@@ -337,16 +342,7 @@ pub const RecoveryManager = struct {
         for (recovery.observer.observables.items) |ring| {
             if (ring.sandbox_id == sandbox_id) {
                 if (ring.thread_handle) |thread| {
-                    if (builtin.os.tag == .linux and !std.Thread.use_pthreads) {
-                        _ = std.os.linux.tgkill(
-                            std.os.linux.getpid(),
-                            @as(std.os.linux.pid_t, @intCast(thread.getHandle())),
-                            std.os.linux.SIG.KILL,
-                        );
-                        thread.join();
-                    } else {
-                        thread.detach();
-                    }
+                    thread.detach();
                 }
                 return;
             }

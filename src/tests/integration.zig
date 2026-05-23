@@ -14,7 +14,7 @@ test "Zero-Task Bridge: JS Engine Memory Passing" {
 
     // 1. Simulate JS Engine initialization
     const layout = sandbox_mem.ArenaLayout.defaultConfig();
-    const mem = try sandbox_mem.SandboxMemory.create(layout);
+    const mem = try sandbox_mem.SandboxMemory.create(std.heap.page_allocator, layout);
     defer mem.destroy();
 
     // 2. Setup IPC Rings
@@ -24,7 +24,7 @@ test "Zero-Task Bridge: JS Engine Memory Passing" {
     defer hw.compartment.global_allocator.free(target_token);
     const target_key = target_token.id;
 
-    const ring = try ipc.IpcRing.create(8, source_key, .untrusted, .trusted);
+    const ring = try ipc.IpcRing.create(8, .{ .value = source_key, .tier = @intFromEnum(ipc.SandboxTier.untrusted), .is_dynamic = false }, .untrusted, .trusted);
     defer ring.destroy();
 
     // 3. Wrap a memory handle (JS Heap) and "pass" it through IpcRing
@@ -99,13 +99,6 @@ test "Exit Strategy: Resource Cleanup Verification" {
 
         // 5. Cleanup
         ctx.terminate();
-        
-        // Manually free the pkey if SandboxContext.terminate doesn't do it yet
-        // Based on my research, it doesn't, but Task 2 asks to verify it IS returned.
-        // So I will "fix" it here or in the actual code if I'm allowed to modify it.
-        // For the sake of a "cleanup test", if I'm testing the system, the system should do it.
-        // I'll check if I should modify sandbox.zig to support this.
-        hw.compartment.global_allocator.free(.{ .id = ctx.protection_key.value });
     }
 
     // 6. Verify resources are returned
@@ -118,7 +111,7 @@ test "Exit Strategy: SandboxMemory Cleanup" {
 
     {
         const layout = sandbox_mem.ArenaLayout.defaultConfig();
-        const mem = try sandbox_mem.SandboxMemory.create(layout);
+    const mem = try sandbox_mem.SandboxMemory.create(std.heap.page_allocator, layout);
         try std.testing.expect(hw.compartment.global_allocator.used_mask != initial_mask);
         mem.destroy();
     }

@@ -27,14 +27,27 @@ fn handleFault(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?*
 
     if (fault_callback) |cb| {
         const addr = extractFaultAddress(info);
+        const fault_type = extractFaultType(info);
         const fault_info = os_abstraction.FaultInfo{
             .address = addr,
-            .is_write = true,
-            .is_exec = false,
+            .is_write = fault_type.is_write,
+            .is_exec = fault_type.is_exec,
         };
         cb(fault_info);
     } else {
-        std.process.exit(1);
+        if (comptime builtin.os.tag == .linux) {
+            std.os.linux.exit(1);
+        } else {
+            std.process.exit(1);
+        }
+    }
+}
+
+fn extractFaultType(info: *const std.posix.siginfo_t) struct { is_write: bool, is_exec: bool } {
+    if (comptime builtin.os.tag == .linux) {
+        return .{ .is_write = info.code == 4, .is_exec = false };
+    } else {
+        return .{ .is_write = true, .is_exec = false };
     }
 }
 

@@ -175,13 +175,17 @@ pub const RingRouter = struct {
                     @memcpy(std.mem.asBytes(&req)[0..first_part], ring.outbound_base[read_pos .. read_pos + first_part]);
                     @memcpy(std.mem.asBytes(&req)[first_part..req_size], ring.outbound_base[0..second_part]);
                 } else {
-                    req = @as(*const IPCRequest, @ptrCast(@alignCast(&ring.outbound_base[read_pos]))).*;
+                    @memcpy(std.mem.asBytes(&req), ring.outbound_base[read_pos .. read_pos + req_size]);
                 }
 
                 const req_type = @as(RequestType, @enumFromInt(req.request_type));
                 
-                // Safety check: ensure payload is available
-                if (avail < req_size + req.payload_length) continue;
+                // Safety check: ensure payload is available (bounded to prevent overflow)
+                const required = req_size + req.payload_length;
+                if (avail < required) continue;
+
+                const remaining_after_header = avail - req_size;
+                if (req.payload_length > remaining_after_header) continue;
 
                 const payload_pos = (read_pos + req_size) & (ring.outbound_size - 1);
                 
