@@ -91,7 +91,8 @@ pub fn main() !void {
         const diff = end - start;
         latencies[i] = @as(u64, @intCast(diff));
         total_ns += diff;
-        if (diff < min_ns) min_ns = @as(u64, @intCast(diff));
+        // Ignore 0-delta samples from timer quantization (macOS ~42ns tick)
+        if (diff > 0 and diff < min_ns) min_ns = @as(u64, @intCast(diff));
         if (diff > max_ns) max_ns = @as(u64, @intCast(diff));
     }
 
