@@ -39,7 +39,7 @@ The HAL is the boundary between hardware primitives (MPK/MTE) and the browser co
 ## 3. Zig 0.16 Migration Standards
 - **File Metadata**: `posix.Stat_t` / `fstat` are deprecated. Use `std.os.linux.Statx` for performance-critical metadata on Linux.
 - **Timing**: Use `std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts)` for low-level POSIX work, and QueryPerformanceCounter/QueryPerformanceFrequency for Windows.
-- **Libc in Tests**: Test binaries link libc for `std.c.mprotect` guard page probing. `std.posix.system.mprotect` does not exist in Zig 0.16's POSIX wrapper, so `std.c.mprotect` is the cross-platform alternative. On Linux, `std.os.linux.mprotect` may also be used.
+- **Libc in Tests**: Test binaries link libc for `std.c.mprotect` (used internally by `hw.os.memProtect`). All guard page probing and memory protection changes must go through `hw.os.memProtect` — never call `std.c.mprotect` or `std.os.linux.mprotect` directly.
 - **Thread Detaching**: For thread lifecycles, only call `thread.join()` on non-detached threads. Detached threads must not be joined to avoid runtime safety panics.
 
 ---

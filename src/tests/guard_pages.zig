@@ -5,17 +5,14 @@ const os_abs = @import("../hw/os_abstraction.zig");
 const testing = std.testing;
 
 fn probeGuardPage(addr: usize) bool {
-    if (builtin.os.tag != .linux) return false;
     const page_size = std.heap.page_size_min;
-    const prot = std.os.linux.PROT{ .READ = true };
-    const rc = std.os.linux.mprotect(@as([*]u8, @ptrFromInt(addr)), page_size, prot);
-    return std.os.linux.errno(rc) == .SUCCESS;
+    os_abs.memProtect(@as([*]u8, @ptrFromInt(addr)), page_size, true, false) catch return false;
+    return true;
 }
 
 fn restoreGuardPage(addr: usize) void {
-    if (builtin.os.tag != .linux) return;
     const page_size = std.heap.page_size_min;
-    _ = std.os.linux.mprotect(@as([*]u8, @ptrFromInt(addr)), page_size, std.os.linux.PROT{});
+    os_abs.memProtect(@as([*]u8, @ptrFromInt(addr)), page_size, false, false) catch {};
 }
 
 test "Guard pages: memory allocation has guard pages around usable region" {

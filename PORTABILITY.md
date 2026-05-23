@@ -72,6 +72,6 @@ Hajr's library and FFI shared library targets do not link libc.
 However, test binaries **do link libc** (`link_libc` is enabled on the test step in `build.zig`) because `std.c.mprotect` is used for guard page probing — `std.posix.system.mprotect` does not exist in Zig 0.16's POSIX wrapper.
 
 ### Guard Page Probing in Tests:
-* Tests that verify guard page security probe page permissions via `std.c.mprotect`.
-* On Linux, the native `std.os.linux.mprotect` syscall wrapper is used as an alternative.
-* The test binary's `link_libc` flag ensures `std.c` symbols are available on all POSIX targets.
+* Tests that verify guard page security probe page permissions via `hw.os.memProtect` (the unified HAL API).
+* This abstracts away the platform-specific implementation: `std.c.mprotect` on macOS/POSIX, `std.os.linux.mprotect` on Linux, `VirtualProtect` on Windows.
+* There is never a need to call raw `mprotect` outside the `hw` module.
