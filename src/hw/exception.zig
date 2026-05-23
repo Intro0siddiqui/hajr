@@ -38,7 +38,7 @@ fn handleFault(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?*
         if (comptime builtin.os.tag == .linux) {
             std.os.linux.exit(1);
         } else {
-            std.process.exit(1);
+            std.posix._exit(1);
         }
     }
 }

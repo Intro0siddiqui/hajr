@@ -74,6 +74,13 @@ pub const HardwareProtection = struct {
         value: u32,
         tier: u8,
         is_dynamic: bool = false,
+
+        /// Free the hardware key if it was dynamically allocated
+        pub fn deinit(key: *const Key) void {
+            if (key.is_dynamic) {
+                hw.compartment.global_allocator.free(.{ .id = key.value });
+            }
+        }
     };
 };
 
@@ -431,6 +438,7 @@ pub const Arena = struct {
     
     /// Destroy the arena
     pub fn destroy(arena: *Arena) void {
+        arena.protection_key.deinit();
         hw.os.memFree(arena.memory);
     }
 };
