@@ -6,12 +6,12 @@ const ipc = hajr.ipc;
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
 
-    // Initialize two IpcRing buffers (Producer -> Consumer)
-    // We create two as requested, although we focus on one-way latency for precise measurement.
-    const ring1 = try ipc.IpcRing.create(ipc.RING_SLOTS, .{ .value = 1, .tier = 1, .is_dynamic = false }, .trusted, .untrusted);
-    defer ring1.destroy();
-    const ring2 = try ipc.IpcRing.create(ipc.RING_SLOTS, .{ .value = 2, .tier = 2, .is_dynamic = false }, .untrusted, .trusted);
-    defer ring2.destroy();
+    // NOTE: This benchmark measures self-talk (send+recv on one ring in one thread).
+    // It does NOT measure real cross-sandbox IPC latency — there is no cross-thread
+    // signal delivery, no PKRU domain switching, and no cross-core cache coherence.
+    // A proper cross-domain benchmark would need two threads and two rings.
+    const ring = try ipc.IpcRing.create(ipc.RING_SLOTS, .{ .value = 1, .tier = 1, .is_dynamic = false }, .trusted, .untrusted);
+    defer ring.destroy();
 
     const warmup_iters = 10_000;
     const bench_iters = 1_000_000;
@@ -24,8 +24,8 @@ pub fn main() !void {
 
     // Warm-up to JIT/cache the code paths
     for (0..warmup_iters) |_| {
-        try ring1.send(.heartbeat, 1, 2, "");
-        _ = try ring1.recv(allocator, &buf);
+        try ring.send(.heartbeat, 1, 2, "");
+        _ = try ring.recv(allocator, &buf);
     }
 
     std.debug.print("Benchmark: {d} iterations\n", .{bench_iters});
@@ -50,9 +50,11 @@ pub fn main() !void {
     for (0..bench_iters) |i| {
         const start = hw.os.monotonicTimestamp();
         
-        // One-way IPC operation: Send + Receive
-        try ring1.send(.heartbeat, 1, 2, "");
-        _ = try ring1.recv(allocator, &buf);
+        // NOTE: This sends and receives on the SAME ring in the SAME thread.
+        // This is NOT measuring cross-sandbox IPC — it only measures
+        // single-threaded ring buffer operation latency.
+        try ring.send(.heartbeat, 1, 2, "");
+        _ = try ring.recv(allocator, &buf);
         
         const end = hw.os.monotonicTimestamp();
         
@@ -78,16 +80,14 @@ pub fn main() !void {
     std.debug.print("------------------\n", .{});
     std.debug.print("Average Measured:   {d:.2} ns\n", .{avg_latency});
     std.debug.print("Timer Overhead:     {d:.2} ns\n", .{timer_overhead});
-    std.debug.print("Est. Pure Logic:    {d:.2} ns (Send + Recv)\n", .{pure_logic_latency});
-    const overhead_per_op = pure_logic_latency / 2.0; 
-    std.debug.print("Est. Per-Op Latency: {d:.2} ns\n", .{overhead_per_op});
+    std.debug.print("Est. Pure Logic:    {d:.2} ns (Send + Recv on same thread/ring)\n", .{pure_logic_latency});
     std.debug.print("99th Percentile:    {d} ns\n", .{p99_latency});
     std.debug.print("Minimum Latency:    {d} ns\n", .{min_ns});
     std.debug.print("Maximum Latency:    {d} ns\n", .{max_ns});
 
-    if (overhead_per_op < 5.0) {
-        std.debug.print("\nSuccess: IPC overhead is truly sub-5ns ({d:.2} ns per op)!\n", .{overhead_per_op});
-    } else {
-        std.debug.print("\nNote: Estimated IPC overhead is {d:.2} ns per op.\n", .{overhead_per_op});
-    }
+    std.debug.print("\nNOTE: This benchmark measures SELF-TALK on one thread.\n", .{});
+    std.debug.print("Real cross-sandbox IPC latency would add:\n", .{});
+    std.debug.print("  - Cross-thread signal/wakeup overhead\n", .{});
+    std.debug.print("  - PKRU register writes (domain switching)\n", .{});
+    std.debug.print("  - Cross-core cache coherence traffic\n", .{});
 }
