@@ -28,6 +28,7 @@ pub fn build(b: *Build) void {
         .target = target,
         .optimize = optimize,
     });
+    ffi_mod.link_libc = true;
     if (pkru_link) |link| {
         ffi_mod.link_objects.append(b.allocator, link) catch @panic("OOM");
     }

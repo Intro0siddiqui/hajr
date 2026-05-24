@@ -1,3 +1,4 @@
+const std = @import("std");
 const hw = @import("../hw/mod.zig");
 const sandbox = @import("../core/sandbox.zig");
 
@@ -105,4 +106,140 @@ export fn __zawra_ring_write(data: [*]const u8, length: usize) callconv(.c) i32 
     meta.write_index.store(write_idx + length, .release);
 
     return 1; // Success
+}
+
+// ============================================================================
+// General C/C++ FFI Bindings for Multi-Connection IPC
+// ============================================================================
+
+pub const C_HardenedRingBuffer = extern struct {
+    memory_ptr: [*]u8,
+    memory_len: usize,
+    metadata_ptr: *RingMetadata,
+    data_ptr: [*]u8,
+    size: usize,
+    key_val: u32,
+    tier_val: u8,
+};
+
+export fn hajr_ring_init(
+    buffer: [*]u8,
+    buffer_len: usize,
+    size: usize,
+    key_value: u32,
+    tier_value: u8,
+) callconv(.c) ?*C_HardenedRingBuffer {
+    const allocator = std.heap.c_allocator;
+    const c_ring = allocator.create(C_HardenedRingBuffer) catch return null;
+    
+    const metadata = @as(*RingMetadata, @ptrCast(@alignCast(buffer)));
+    metadata.write_index.store(0, .release);
+    metadata.read_index.store(0, .release);
+    metadata.sequence.store(0, .release);
+    metadata.poison_bit.store(false, .release);
+    metadata.poison_cause.store(0, .release);
+
+    c_ring.* = .{
+        .memory_ptr = buffer,
+        .memory_len = buffer_len,
+        .metadata_ptr = metadata,
+        .data_ptr = @ptrFromInt(@intFromPtr(buffer) + sandbox.RingConfig.METADATA_SIZE),
+        .size = size,
+        .key_val = key_value,
+        .tier_val = tier_value,
+    };
+    return c_ring;
+}
+
+export fn hajr_ring_map(
+    buffer: [*]u8,
+    buffer_len: usize,
+    size: usize,
+    key_value: u32,
+    tier_value: u8,
+) callconv(.c) ?*C_HardenedRingBuffer {
+    const allocator = std.heap.c_allocator;
+    const c_ring = allocator.create(C_HardenedRingBuffer) catch return null;
+    const metadata = @as(*RingMetadata, @ptrCast(@alignCast(buffer)));
+    c_ring.* = .{
+        .memory_ptr = buffer,
+        .memory_len = buffer_len,
+        .metadata_ptr = metadata,
+        .data_ptr = @ptrFromInt(@intFromPtr(buffer) + sandbox.RingConfig.METADATA_SIZE),
+        .size = size,
+        .key_val = key_value,
+        .tier_val = tier_value,
+    };
+    return c_ring;
+}
+
+export fn hajr_ring_free(c_ring: ?*C_HardenedRingBuffer) callconv(.c) void {
+    if (c_ring) |r| {
+        std.heap.c_allocator.destroy(r);
+    }
+}
+
+export fn hajr_ring_write(
+    c_ring: ?*C_HardenedRingBuffer,
+    data: [*]const u8,
+    length: usize,
+) callconv(.c) i32 {
+    const ring = c_ring orelse return -1;
+    const meta = ring.metadata_ptr;
+
+    if (meta.poison_bit.load(.acquire)) return -2;
+
+    const write_idx = meta.write_index.load(.acquire);
+    const read_idx = meta.read_index.load(.acquire);
+
+    const used = write_idx -% read_idx;
+    const avail = ring.size - used;
+
+    if (length > avail) return 0; // Full
+
+    const write_pos = write_idx & (ring.size - 1);
+    const first_len = @min(length, ring.size - write_pos);
+    @memcpy(ring.data_ptr[write_pos..write_pos + first_len], data[0..first_len]);
+
+    if (first_len < length) {
+        @memcpy(ring.data_ptr[0..length - first_len], data[first_len..length]);
+    }
+
+    meta.write_index.store(write_idx +% length, .release);
+    _ = meta.sequence.fetchAdd(1, .acq_rel);
+    return 1;
+}
+
+export fn hajr_ring_read(
+    c_ring: ?*C_HardenedRingBuffer,
+    buf: [*]u8,
+    length: usize,
+    bytes_read: *usize,
+) callconv(.c) i32 {
+    const ring = c_ring orelse return -1;
+    const meta = ring.metadata_ptr;
+
+    if (meta.poison_bit.load(.acquire)) return -2;
+
+    const write_idx = meta.write_index.load(.acquire);
+    const read_idx = meta.read_index.load(.acquire);
+
+    const avail = write_idx -% read_idx;
+    if (avail == 0) {
+        bytes_read.* = 0;
+        return 1;
+    }
+
+    const to_read = @min(@as(usize, @intCast(avail)), length);
+    const read_pos = read_idx & (ring.size - 1);
+    const first_len = @min(to_read, ring.size - read_pos);
+    @memcpy(buf[0..first_len], ring.data_ptr[read_pos..read_pos + first_len]);
+
+    if (first_len < to_read) {
+        @memcpy(buf[first_len..to_read], ring.data_ptr[0..to_read - first_len]);
+    }
+
+    meta.read_index.store(read_idx +% to_read, .release);
+    bytes_read.* = to_read;
+    return 1;
 }
