@@ -8,6 +8,7 @@ pub const sandbox_rt = struct {
     pub const system = @import("sandbox/system.zig");
 };
 pub const bindings = @import("sandbox/bindings.zig");
+pub const lockdown = @import("sandbox/lockdown.zig");
 
 test {
     _ = @import("sandbox/system.zig");

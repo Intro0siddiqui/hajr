@@ -95,7 +95,7 @@ pub fn getRingPoisonCause(ring: *const PoisonableRingMetadata) PoisonCause {
 /// 
 /// This is the critical security component that:
 /// 1. Monitors all sandbox rings for poison bits
-/// 2. Kills compromised SpiderMonkey threads
+/// 2. Kills compromised JavaScriptCore threads
 /// 3. Unmaps compromised memory
 /// 4. Triggers sandbox rotation
 
@@ -272,7 +272,7 @@ pub fn init() void {
 /// Sandbox recovery manager
 /// 
 /// Handles the complete recovery cycle when a sandbox is poisoned:
-/// 1. Kill the SpiderMonkey thread
+/// 1. Kill the JavaScriptCore thread
 /// 2. Unmap the memory arena
 /// 3. Release hardware keys
 /// 4. Create a new sandbox instance
@@ -322,7 +322,7 @@ pub const RecoveryManager = struct {
         recovery.in_recovery.store(true, .release);
         defer recovery.in_recovery.store(false, .release);
         
-        // 1. Kill the SpiderMonkey thread
+        // 1. Kill the JavaScriptCore thread
         recovery.killThread(sandbox_id);
         
         // 2. Unmap memory arena

@@ -3,13 +3,13 @@ const hw = @import("../hw/mod.zig");
 const sandbox = @import("../core/sandbox.zig");
 
 // ============================================================================
-// SpiderMonkey Zero-Copy FFI Bindings (Task 2)
+// JavaScriptCore Zero-Copy FFI Bindings (Task 2)
 // ============================================================================
 
 pub const RingMetadata = sandbox.RingMetadata;
 
-/// SpiderMonkey External ArrayBuffer representation
-pub const SMExternalBuffer = extern struct {
+/// JavaScriptCore External ArrayBuffer representation
+pub const JSCExternalBuffer = extern struct {
     data: [*]u8,
     length: usize,
     free_func: ?*const fn ([*]u8, usize, *anyopaque) callconv(.c) void,
@@ -36,9 +36,9 @@ pub fn initFFI(config: *const FFIConfig) void {
 }
 
 /// Read a payload from the inbound ring.
-/// CRITICAL ZERO-COPY DIRECTIVE: Uses SpiderMonkey's external ArrayBuffer API.
+/// CRITICAL ZERO-COPY DIRECTIVE: Uses JavaScriptCore's external ArrayBuffer API.
 /// Does not copy bytes into JS heap. Passes memory-mapped ring pointer directly.
-export fn __zawra_ring_read(out_ext_buf: *SMExternalBuffer) callconv(.c) i32 {
+export fn __zawra_ring_read(out_ext_buf: *JSCExternalBuffer) callconv(.c) i32 {
     const config = g_ffi_config orelse return -1;
     const meta = config.inbound_meta;
 
@@ -72,7 +72,7 @@ export fn __zawra_ring_read(out_ext_buf: *SMExternalBuffer) callconv(.c) i32 {
     return 1; // Success
 }
 
-/// SpiderMonkey calls this after finished processing the external buffer 
+/// JavaScriptCore calls this after finished processing the external buffer 
 export fn __zawra_ring_commit_read(bytes_consumed: u64) callconv(.c) void {
     const config = g_ffi_config orelse return;
     const meta = config.inbound_meta;
@@ -242,4 +242,21 @@ export fn hajr_ring_read(
     meta.read_index.store(read_idx +% to_read, .release);
     bytes_read.* = to_read;
     return 1;
+}
+
+// ============================================================================
+// Sandbox Allocation FFI (Task 3)
+// ============================================================================
+
+/// Allocate a sandbox and return its protection key/ID
+export fn __zawra_allocate_sandbox(tier: u8) callconv(.c) u32 {
+    const sb_tier: sandbox.SandboxTier = if (tier == 0) .trusted else .untrusted;
+    const key = sandbox.SandboxTier.getProtectionKey(sb_tier);
+    return @as(u32, key);
+}
+
+/// Free a sandbox
+export fn __zawra_free_sandbox(id: u32) callconv(.c) void {
+    _ = id;
+}
 }

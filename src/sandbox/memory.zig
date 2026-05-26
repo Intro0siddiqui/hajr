@@ -155,7 +155,7 @@ pub fn validatePointer(self: *const SandboxMemory, segment: SegmentType, ptr: [*
         return @alignCast(ptr);
     }
 
-    /// Segment C: SpiderMonkey JS Heap Arena
+    /// Segment C: JavaScriptCore JS Heap Arena
     /// Internal pointers passed to FFI strictly bounded to this Segment
     pub fn getJsHeapSegment(self: *const SandboxMemory) [*]align(PAGE_SIZE) u8 {
         const offset = ArenaLayout.alignToPage(self.layout.inbound_size) +

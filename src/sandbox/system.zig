@@ -1,12 +1,12 @@
 //! Hajr Sandbox System Integration Module
 //! 
-//! Ties together all sandbox components: Arena Layout, SpiderMonkey FFI,
+//! Ties together all sandbox components: Arena Layout, JavaScriptCore FFI,
 //! Tier 1 Router, and Poison Protocol for complete zero-copy sandbox system.
 
 const std = @import("std");
 const atomic = std.atomic;
 const memory = @import("memory.zig");
-const sm_bindings = @import("bindings.zig");
+const jsc_bindings = @import("bindings.zig");
 const router = @import("router.zig");
 const poison = @import("poison.zig");
 
@@ -32,11 +32,11 @@ const poison = @import("poison.zig");
 /// - `getSegmentBounds()` - Returns ring segment pointers
 /// - `validatePointer()` - FFI bounds checking
 
-/// Task 2: SpiderMonkey Zero-Copy FFI Bindings
+/// Task 2: JavaScriptCore Zero-Copy FFI Bindings
 /// 
 /// STATUS: ✅ COMPLETE
 /// 
-/// Implemented in `src/ffi/spidermonkey.zig`:
+/// Implemented in `src/ffi/javascriptcore.zig`:
 /// - C ABI functions for ring I/O
 /// - External ArrayBuffer creation (zero-copy)
 /// - Thread-local FFI configuration
@@ -102,8 +102,8 @@ pub const SandboxInstance = struct {
     inbound_meta: *volatile router.RingMetadata,
     outbound_meta: *volatile router.RingMetadata,
     
-    /// FFI configuration for SpiderMonkey
-    ffi_config: sm_bindings.FFIConfig,
+    /// FFI configuration for JavaScriptCore
+    ffi_config: jsc_bindings.FFIConfig,
     
     /// Observable ring for Tier 0 monitoring
     observable: *poison.ObservableRing,
@@ -133,7 +133,7 @@ pub const SandboxInstance = struct {
         const inbound_bounds = arena.getSegmentBounds(.inbound_ring);
         const outbound_bounds = arena.getSegmentBounds(.outbound_ring);
         
-        const ffi_config = sm_bindings.FFIConfig{
+        const ffi_config = jsc_bindings.FFIConfig{
             .inbound_base = @ptrCast(inbound_bounds.pointer.toTagged()),
             .inbound_size = inbound_bounds.size,
             .inbound_meta = @ptrCast(@alignCast(@volatileCast(inbound_meta))),
@@ -205,7 +205,7 @@ pub const SandboxInstance = struct {
 // Tier 1 (Main Process)              Tier 2 (Sandboxed Engine)
 // =======================            =========================
 // 
-// Browser backend (e.g. z-net)         SpiderMonkey JS Engine
+// Browser backend (e.g. z-net)         JavaScriptCore JS Engine
 //       ↓                                 ↑
 //       │                                 │
 //       ▼                                 │
@@ -299,7 +299,7 @@ test "FFI pointer bounds validation" {
     defer sandbox.destroy();
     
     // Initialize FFI with sandbox config
-    sm_bindings.initFFI(&sandbox.ffi_config);
+    jsc_bindings.initFFI(&sandbox.ffi_config);
     
     // Get ring bounds
     const inbound_bounds = sandbox.arena.getSegmentBounds(.inbound_ring);

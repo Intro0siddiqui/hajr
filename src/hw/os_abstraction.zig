@@ -201,3 +201,50 @@ pub fn exitProcess(code: u8) noreturn {
         std.posix.exit(code);
     }
 }
+
+// ============================================================================
+// OS-Level Process Lockdown
+// ============================================================================
+
+/// Errors that can occur during process lockdown.
+pub const LockdownError = error{
+    UnsupportedPlatform,
+    PrctlFailed,
+    SeccompFailed,
+    LandlockNotSupported,
+    LandlockFailed,
+    KernelTooOld,
+    SandboxInitFailed,
+    MitigationPolicyFailed,
+};
+
+/// Seal the current process for all future operations.
+///
+/// After this call:
+/// - Linux: seccomp-BPF whitelist allows only essential syscalls;
+///          Landlock rules deny all filesystem access.
+/// - macOS: Seatbelt profile denies all default operations.
+/// - Windows: Mitigation policies disable win32k, enforce strict handles, etc.
+///
+/// Must be called after all initialization is complete and before
+/// processing any untrusted data.
+pub fn sealProcess() LockdownError!void {
+    switch (builtin.os.tag) {
+        .linux => {
+            const seccomp = @import("seccomp.zig");
+            const landlock = @import("landlock.zig");
+            try seccomp.install(.jit_allowed);
+            try landlock.denyAllAccess();
+        },
+        .macos => {
+            const seatbelt = @import("seatbelt.zig");
+            try seatbelt.apply(.no_write);
+        },
+        .windows => {
+            const mitigations = @import("windows/mitigations.zig");
+            try mitigations.apply(.{});
+            try mitigations.applyLowIntegrity();
+        },
+        else => return error.UnsupportedPlatform,
+    }
+}

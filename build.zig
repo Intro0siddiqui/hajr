@@ -22,7 +22,7 @@ pub fn build(b: *Build) void {
         hajr_mod.link_objects.append(b.allocator, link) catch @panic("OOM");
     }
 
-    // FFI Bindings (shared library for SpiderMonkey/Bun/Deno)
+    // FFI Bindings (shared library for JavaScriptCore/Bun/Deno)
     const ffi_mod = b.createModule(.{
         .root_source_file = b.path("src/ffi_export.zig"),
         .target = target,
@@ -58,6 +58,20 @@ pub fn build(b: *Build) void {
     });
     b.installArtifact(ffi_lib);
 
+    // Static library with FFI exports for tight integration
+    const ffi_static_lib = b.addLibrary(.{
+        .name = "hajr_ffi_static",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ffi_export.zig"),
+            .target = target,
+            .optimize = optimize,
+            .pic = true,
+        }),
+        .linkage = .static,
+    });
+    b.installArtifact(ffi_static_lib);
+
+    // Examples
     const example = b.addExecutable(.{
         .name = "simple_sandbox",
         .root_module = example_mod,

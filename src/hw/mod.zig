@@ -13,6 +13,11 @@ pub const posix_io = if (builtin.os.tag == .windows) @import("os_abstraction.zig
 pub const os = @import("os_abstraction.zig");
 pub const windows = @import("windows.zig");
 
+// OS-level lockdown modules — conditionally imported based on target
+pub const seccomp = if (builtin.os.tag == .linux) @import("seccomp.zig") else struct {};
+pub const landlock = if (builtin.os.tag == .linux) @import("landlock.zig") else struct {};
+pub const seatbelt = if (builtin.os.tag == .macos) @import("seatbelt.zig") else struct {};
+
 extern fn haj_wrpkru(value: u32) callconv(.c) void;
 extern fn haj_rdpkru() callconv(.c) u32;
 

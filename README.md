@@ -28,7 +28,7 @@ Hajr enforces a strict 4-tier security model using protection keys:
 | :--- | :--- | :--- |
 | **0** | **Root** | System initialization and global policy management. |
 | **1** | **Trusted** | Safe subsystems like the Network stack (z-net) and Storage (BrowserDB). |
-| **2** | **Untrusted** | Dangerous components like Rendering (Gecko) and JavaScript execution (SpiderMonkey). |
+| **2** | **Untrusted** | Dangerous components like Rendering (Gecko) and JavaScript execution (JavaScriptCore). |
 | **3** | **Isolated** | Highly restricted 3rd-party plugins and external handles. |
 
 ## Developer Guide
@@ -61,4 +61,4 @@ zig build -Dtarget=aarch64-macos
 *   `src/core/`: The core sandbox architecture and hardware/software fallback key management.
 *   `src/ipc/`: The lock-free, zero-copy ring buffer implementation.
 *   `src/hw/`: The Hardware Abstraction Layer mapping Zig to raw MPK/MTE operations and OS-specific fallbacks.
-*   `src/sandbox/`: Sandbox runtime — memory layout, event routing, poison protocol, SpiderMonkey FFI bindings.
+*   `src/sandbox/`: Sandbox runtime — memory layout, event routing, poison protocol, JavaScriptCore FFI bindings.
