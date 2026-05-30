@@ -49,7 +49,7 @@ pub fn memProtect(ptr: [*]u8, len: usize, read: bool, write: bool) !void {
     var prot = std.posix.system.PROT{};
     if (read) prot.READ = true;
     if (write) prot.WRITE = true;
-    const rc = std.posix.system.mprotect(ptr, len, prot);
+    const rc = std.posix.system.mprotect(@ptrCast(@alignCast(ptr)), len, prot);
     if (std.posix.errno(rc) != .SUCCESS) return error.ProtectionFailed;
 }
 

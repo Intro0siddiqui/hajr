@@ -252,11 +252,10 @@ export fn hajr_ring_read(
 export fn __zawra_allocate_sandbox(tier: u8) callconv(.c) u32 {
     const sb_tier: sandbox.SandboxTier = if (tier == 0) .trusted else .untrusted;
     const key = sandbox.SandboxTier.getProtectionKey(sb_tier);
-    return @as(u32, key);
+    return key.value;
 }
 
 /// Free a sandbox
 export fn __zawra_free_sandbox(id: u32) callconv(.c) void {
     _ = id;
-}
 }

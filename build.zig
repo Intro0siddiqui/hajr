@@ -18,6 +18,7 @@ pub fn build(b: *Build) void {
         .target = target,
         .optimize = optimize,
     });
+    hajr_mod.link_libc = true;
     if (pkru_link) |link| {
         hajr_mod.link_objects.append(b.allocator, link) catch @panic("OOM");
     }

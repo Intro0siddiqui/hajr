@@ -7,7 +7,7 @@ pub fn init() void {
 
     var sa: std.posix.Sigaction = .{
         .handler = .{ .sigaction = handleFault },
-        .mask = std.posix.sigset_t{0},
+        .mask = std.mem.zeroes(std.posix.sigset_t),
         .flags = std.posix.SA.SIGINFO | std.posix.SA.ONSTACK,
     };
 
