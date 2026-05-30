@@ -20,7 +20,7 @@ jobs:
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: master
 
       - name: zig build
         run: zig build
@@ -28,11 +28,5 @@ jobs:
       - name: Run cross-thread IPC benchmark
         run: zig build benchmark
 
-      - name: Run tests (Linux only)
-        if: runner.os == 'Linux'
-        run: |
-          zig build test 2>&1 || true
-          TEST_BIN=$(ls .zig-cache/o/*/test 2>/dev/null | head -1)
-          if [ -n "$TEST_BIN" ]; then
-            $TEST_BIN 2>&1
-          fi
+      - name: Run tests
+        run: zig build test --summary all
