@@ -59,15 +59,21 @@ pub fn build(b: *Build) void {
     });
     b.installArtifact(ffi_lib);
 
+    const ffi_static_mod = b.createModule(.{
+        .root_source_file = b.path("src/ffi_export.zig"),
+        .target = target,
+        .optimize = optimize,
+        .pic = true,
+    });
+    ffi_static_mod.link_libc = true;
+    if (pkru_link) |link| {
+        ffi_static_mod.link_objects.append(b.allocator, link) catch @panic("OOM");
+    }
+
     // Static library with FFI exports for tight integration
     const ffi_static_lib = b.addLibrary(.{
         .name = "hajr_ffi_static",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/ffi_export.zig"),
-            .target = target,
-            .optimize = optimize,
-            .pic = true,
-        }),
+        .root_module = ffi_static_mod,
         .linkage = .static,
     });
     b.installArtifact(ffi_static_lib);

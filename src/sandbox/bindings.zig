@@ -259,3 +259,24 @@ export fn __zawra_allocate_sandbox(tier: u8) callconv(.c) u32 {
 export fn __zawra_free_sandbox(id: u32) callconv(.c) void {
     _ = id;
 }
+
+export fn hajr_ring_signal(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
+    const ring = c_ring orelse return -1;
+    const meta = ring.metadata_ptr;
+    const addr = @as(*volatile u32, @ptrCast(&meta.write_index));
+    hw.os.futexWake(addr, 1);
+    return 1;
+}
+
+export fn hajr_ring_wait(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
+    const ring = c_ring orelse return -1;
+    const meta = ring.metadata_ptr;
+    const current = meta.write_index.load(.acquire);
+    const read_idx = meta.read_index.load(.acquire);
+    if (current != read_idx) return 1;
+    const addr = @as(*volatile u32, @ptrCast(&meta.write_index));
+    const expected = @as(u32, @truncate(current));
+    hw.os.futexWait(addr, expected);
+    return 1;
+}
+

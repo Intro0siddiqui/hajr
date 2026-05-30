@@ -248,3 +248,30 @@ pub fn sealProcess() LockdownError!void {
         else => return error.UnsupportedPlatform,
     }
 }
+
+pub const FUTEX_WAIT_PRIVATE: u32 = 128; // FUTEX_WAIT (0) | FUTEX_PRIVATE_FLAG (128)
+pub const FUTEX_WAKE_PRIVATE: u32 = 129; // FUTEX_WAKE (1) | FUTEX_PRIVATE_FLAG (128)
+
+pub fn futexWait(addr: *volatile u32, expected: u32) void {
+    if (comptime builtin.os.tag == .linux) {
+        _ = std.os.linux.syscall4(
+            .futex,
+            @intFromPtr(addr),
+            FUTEX_WAIT_PRIVATE,
+            expected,
+            0,
+        );
+    }
+}
+
+pub fn futexWake(addr: *volatile u32, count: u32) void {
+    if (comptime builtin.os.tag == .linux) {
+        _ = std.os.linux.syscall3(
+            .futex,
+            @intFromPtr(addr),
+            FUTEX_WAKE_PRIVATE,
+            count,
+        );
+    }
+}
+
