@@ -131,29 +131,50 @@ pub fn apply(flags: MitigationFlags) !void {
     }
 }
 
+// advapi32 functions not exposed by std.os.windows in Zig 0.16
+const SID = opaque {};
+const SID_AND_ATTRIBUTES = extern struct {
+    Sid: ?*SID,
+    Attributes: windows.DWORD,
+};
+const TOKEN_MANDATORY_LABEL = extern struct {
+    Label: SID_AND_ATTRIBUTES,
+};
+const TOKEN_INFORMATION_CLASS = u32;
+
+extern "advapi32" fn OpenProcessToken(
+    ProcessHandle: windows.HANDLE,
+    DesiredAccess: windows.DWORD,
+    TokenHandle: *windows.HANDLE,
+) callconv(.winapi) windows.BOOL;
+
+extern "advapi32" fn SetTokenInformation(
+    TokenHandle: windows.HANDLE,
+    TokenInformationClass: TOKEN_INFORMATION_CLASS,
+    TokenInformation: *const anyopaque,
+    TokenInformationLength: windows.DWORD,
+) callconv(.winapi) windows.BOOL;
+
 pub fn applyLowIntegrity() !void {
     if (builtin.os.tag != .windows) return error.UnsupportedPlatform;
 
-    const TOKEN_QUERY: u32 = 0x0008;
-    const TOKEN_WRITE: u32 = 0x0020;
-    const TokenIntegrityLevel: u32 = 0x19;
+    const TOKEN_QUERY: windows.DWORD = 0x0008;
+    const TOKEN_WRITE: windows.DWORD = 0x0020;
+    const TokenIntegrityLevel: TOKEN_INFORMATION_CLASS = 0x19;
 
     var token: windows.HANDLE = undefined;
-    if (windows.OpenProcessToken(windows.GetCurrentProcess(), TOKEN_QUERY | TOKEN_WRITE, &token) == .FALSE) return error.TokenOpenFailed;
-    defer _ = windows.CloseHandle(token);
-
-    const TOKEN_MANDATORY_LABEL = extern struct {
-        Label: windows.SID_AND_ATTRIBUTES,
-    };
+    if (OpenProcessToken(windows.current_process, TOKEN_QUERY | TOKEN_WRITE, &token) == .FALSE)
+        return error.TokenOpenFailed;
+    defer windows.CloseHandle(token);
 
     var tml = TOKEN_MANDATORY_LABEL{
         .Label = .{
-            .Sid = undefined,
+            .Sid = null,
             .Attributes = 0x00000020,
         },
     };
 
-    _ = windows.SetTokenInformation(token, TokenIntegrityLevel, &tml, @sizeOf(@TypeOf(tml)));
+    _ = SetTokenInformation(token, TokenIntegrityLevel, &tml, @sizeOf(@TypeOf(tml)));
 }
 
 test "mitigation flags have defaults" {
