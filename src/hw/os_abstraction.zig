@@ -176,6 +176,11 @@ pub fn monotonicTimestamp() u64 {
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
+pub fn getMonotonicTime() f64 {
+    return @as(f64, @floatFromInt(monotonicTimestamp())) / 1e9;
+}
+
+
 pub const FaultInfo = extern struct {
     address: usize,
     is_write: bool,
