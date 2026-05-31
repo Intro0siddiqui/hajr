@@ -65,5 +65,5 @@ pub fn memProtect(ptr: [*]u8, len: usize, read: bool, write: bool) !void {
     else
         PAGE_READWRITE;
     const ok = VirtualProtect(ptr, len, protect, &old_protect);
-    if (!ok) return error.ProtectionFailed;
+    if (ok == .FALSE) return error.ProtectionFailed;
 }

@@ -91,7 +91,7 @@ pub fn fileTruncate(handle: OsHandle, size: u64) !void {
     const distance: windows.LARGE_INTEGER = @intCast(size);
     _ = SetFilePointerEx(handle, distance, null, FILE_BEGIN);
     const ok = SetEndOfFile(handle);
-    if (!ok) return error.TruncateFailed;
+    if (ok == .FALSE) return error.TruncateFailed;
 }
 
 /// Write data to a file at a given offset. Returns bytes written.
@@ -100,7 +100,7 @@ pub fn fileWrite(handle: OsHandle, data: []const u8, offset: u64) !u64 {
     _ = SetFilePointerEx(handle, distance, null, FILE_BEGIN);
     var written: windows.DWORD = 0;
     const ok = WriteFile(handle, data.ptr, @intCast(data.len), &written, null);
-    if (!ok) return error.WriteFailed;
+    if (ok == .FALSE) return error.WriteFailed;
     return written;
 }
 
@@ -110,7 +110,7 @@ pub fn fileRead(handle: OsHandle, buffer: []u8, offset: u64) !u64 {
     _ = SetFilePointerEx(handle, distance, null, FILE_BEGIN);
     var read: windows.DWORD = 0;
     const ok = ReadFile(handle, buffer.ptr, @intCast(buffer.len), &read, null);
-    if (!ok) return error.ReadFailed;
+    if (ok == .FALSE) return error.ReadFailed;
     return read;
 }
 
@@ -124,6 +124,6 @@ pub fn fileSeek(handle: OsHandle, offset: i64, origin: i32) !u64 {
     };
     var new_pos: windows.LARGE_INTEGER = 0;
     const ok = SetFilePointerEx(handle, offset, &new_pos, move_method);
-    if (ok == windows.FALSE) return error.SeekFailed;
+    if (ok == .FALSE) return error.SeekFailed;
     return @intCast(new_pos);
 }
