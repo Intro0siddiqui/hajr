@@ -81,51 +81,51 @@ pub fn apply(flags: MitigationFlags) !void {
 
     if (flags.dep) {
         const policy = ProcessDEPPolicy{
-            .Enable = windows.TRUE,
-            .Permanent = windows.TRUE,
+            .Enable = .TRUE,
+            .Permanent = .TRUE,
         };
         try applyPolicy(ProcessDEPPolicyId, &policy, @sizeOf(@TypeOf(policy)));
     }
     if (flags.aslr) {
         const policy = ProcessASLRPolicy{
-            .EnableForceRelocateImages = windows.TRUE,
-            .RequireRelocateImages = windows.FALSE,
-            .EnableBottomUpRandomization = windows.TRUE,
-            .EnableHighEntropy = if (flags.high_entropy_aslr) windows.TRUE else windows.FALSE,
-            .DisallowStrippedImages = windows.FALSE,
+            .EnableForceRelocateImages = .TRUE,
+            .RequireRelocateImages = .FALSE,
+            .EnableBottomUpRandomization = .TRUE,
+            .EnableHighEntropy = if (flags.high_entropy_aslr) .TRUE else .FALSE,
+            .DisallowStrippedImages = .FALSE,
         };
         try applyPolicy(ProcessASLRPolicyId, &policy, @sizeOf(@TypeOf(policy)));
     }
     if (flags.strict_handles) {
         const policy = ProcessStrictHandleCheckPolicy{
-            .HandleExceptionsPermanently = windows.TRUE,
-            .RaiseExceptionOnInvalidHandle = windows.TRUE,
+            .HandleExceptionsPermanently = .TRUE,
+            .RaiseExceptionOnInvalidHandle = .TRUE,
         };
         try applyPolicy(ProcessStrictHandleCheckPolicyId, &policy, @sizeOf(@TypeOf(policy)));
     }
     if (flags.no_win32k) {
         const policy = ProcessSystemCallDisablePolicy{
-            .DisallowWin32kSystemCalls = windows.TRUE,
+            .DisallowWin32kSystemCalls = .TRUE,
         };
         try applyPolicy(ProcessSystemCallDisablePolicyId, &policy, @sizeOf(@TypeOf(policy)));
     }
     if (flags.no_extension_points) {
         const policy = ProcessExtensionPointDisablePolicy{
-            .DisableExtensionPoints = windows.TRUE,
+            .DisableExtensionPoints = .TRUE,
         };
         try applyPolicy(ProcessExtensionPointDisablePolicyId, &policy, @sizeOf(@TypeOf(policy)));
     }
     if (flags.block_non_microsoft) {
         const policy = ProcessSignaturePolicy{
-            .MicrosoftSignedOnly = windows.TRUE,
+            .MicrosoftSignedOnly = .TRUE,
         };
         try applyPolicy(ProcessSignaturePolicyId, &policy, @sizeOf(@TypeOf(policy)));
     }
     if (flags.no_remote_images or flags.no_low_label_images) {
         const policy = ProcessImageLoadPolicy{
-            .NoRemoteImages = if (flags.no_remote_images) windows.TRUE else windows.FALSE,
-            .NoLowMandatoryLabelImages = if (flags.no_low_label_images) windows.TRUE else windows.FALSE,
-            .PreferSystem32Images = windows.FALSE,
+            .NoRemoteImages = if (flags.no_remote_images) .TRUE else .FALSE,
+            .NoLowMandatoryLabelImages = if (flags.no_low_label_images) .TRUE else .FALSE,
+            .PreferSystem32Images = .FALSE,
         };
         try applyPolicy(ProcessImageLoadPolicyId, &policy, @sizeOf(@TypeOf(policy)));
     }
