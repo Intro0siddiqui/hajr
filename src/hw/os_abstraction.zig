@@ -167,6 +167,56 @@ pub fn fileRead(handle: OsHandle, buffer: []u8, offset: u64) !u64 {
     return @as(u64, @intCast(bytes));
 }
 
+pub fn fileSeek(handle: OsHandle, offset: i64, origin: SeekOrigin) !u64 {
+    var file = std.fs.File{ .handle = handle };
+    switch (origin) {
+        .start => try file.seekTo(@intCast(offset)),
+        .current => try file.seekBy(offset),
+        .end => {
+            const size = try file.getEndPos();
+            const target = @as(i64, @intCast(size)) + offset;
+            if (target < 0) return error.InvalidOffset;
+            try file.seekTo(@intCast(target));
+        },
+    }
+    return try file.getPos();
+}
+
+pub fn fileStat(path: []const u8) !FileInfo {
+    const stat = try std.fs.cwd().statFile(path);
+    return FileInfo{
+        .size = stat.size,
+        .mtime = @intCast(@divTrunc(stat.mtime, std.time.ns_per_s)),
+        .atime = @intCast(@divTrunc(stat.atime, std.time.ns_per_s)),
+        .ctime = @intCast(@divTrunc(stat.ctime, std.time.ns_per_s)),
+        .is_dir = stat.kind == .directory,
+    };
+}
+
+pub fn fileAccess(path: []const u8, mode: AccessMode) !bool {
+    if (comptime builtin.os.tag == .windows) {
+        _ = std.fs.cwd().statFile(path) catch return false;
+        return true;
+    } else {
+        const amode: u32 = switch (mode) {
+            .exists => std.posix.F_OK,
+            .read => std.posix.R_OK,
+            .write => std.posix.W_OK,
+            .execute => std.posix.X_OK,
+        };
+        std.posix.access(path, amode) catch return false;
+        return true;
+    }
+}
+
+pub fn fileUnlink(path: []const u8) !void {
+    try std.fs.cwd().deleteFile(path);
+}
+
+pub fn fileMkdir(path: []const u8) !void {
+    try std.fs.cwd().makeDir(path);
+}
+
 pub fn monotonicTimestamp() u64 {
     if (builtin.os.tag == .windows) {
         return windows.time.monotonicTimestamp();
@@ -179,6 +229,27 @@ pub fn monotonicTimestamp() u64 {
 pub fn getMonotonicTime() f64 {
     return @as(f64, @floatFromInt(monotonicTimestamp())) / 1e9;
 }
+
+pub const SeekOrigin = enum(i32) {
+    start = 0,
+    current = 1,
+    end = 2,
+};
+
+pub const FileInfo = extern struct {
+    size: u64,
+    mtime: i64,
+    atime: i64,
+    ctime: i64,
+    is_dir: bool,
+};
+
+pub const AccessMode = enum(u32) {
+    exists = 0,
+    read = 1,
+    write = 2,
+    execute = 4,
+};
 
 
 pub const FaultInfo = extern struct {

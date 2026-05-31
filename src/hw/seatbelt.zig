@@ -9,9 +9,9 @@ extern "System" fn sandbox_init(
     profile: [*:0]const u8,
     flags: u64,
     errorbuf: ?*?*u8,
-) callconv(.C) c_int;
+) callconv(.c) c_int;
 
-extern "System" fn sandbox_free_error(errorbuf: *u8) callconv(.C) void;
+extern "System" fn sandbox_free_error(errorbuf: *u8) callconv(.c) void;
 
 pub const Profile = enum {
     no_internet,
