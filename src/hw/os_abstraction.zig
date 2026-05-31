@@ -325,6 +325,7 @@ pub const LockdownError = error{
     KernelTooOld,
     SandboxInitFailed,
     MitigationPolicyFailed,
+    TokenOpenFailed,
 };
 
 /// Seal the current process for all future operations.
