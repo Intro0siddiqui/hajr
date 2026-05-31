@@ -1,6 +1,7 @@
 const std = @import("std");
 const hw = @import("../hw/mod.zig");
 const sandbox = @import("../core/sandbox.zig");
+const builtin = @import("builtin");
 
 // ============================================================================
 // JavaScriptCore Zero-Copy FFI Bindings (Task 2)
@@ -290,7 +291,11 @@ export fn Zawra_Hajr_GetMonotonicTime() callconv(.c) f64 {
 // Agnostic Threading FFI
 // ============================================================================
 
-const builtin = @import("builtin");
+// Windows thread API declarations
+extern "kernel32" fn SetThreadPriority(hThread: ?*anyopaque, nPriority: i32) callconv(.winapi) i32;
+extern "kernel32" fn WaitForSingleObject(hHandle: ?*anyopaque, dwMilliseconds: u32) callconv(.winapi) u32;
+extern "kernel32" fn CloseHandle(hObject: ?*anyopaque) callconv(.winapi) i32;
+const INFINITE: u32 = 0xFFFFFFFF;
 
 export fn hajr_thread_create(
     func: *const fn (?*anyopaque) callconv(.c) ?*anyopaque,
@@ -304,16 +309,17 @@ export fn hajr_thread_create(
     const thread = std.Thread.spawn(.{}, Wrapper.entry, .{ func, arg }) catch {
         return 0;
     };
-    // On POSIX systems, thread.impl.handle is pthread_t (which is a pointer or integer).
-    // In Zig 0.16.0 we convert this pointer/integer to usize via @intFromPtr / @bitCast depending on the platform type representation.
-    // For pthreads, using @intFromPtr (if it's a pointer) or casting to usize works cleanly. 
-    return @intFromPtr(thread.impl.handle);
+    if (comptime builtin.os.tag == .windows) {
+        return @intFromPtr(thread.impl.thread.thread_handle);
+    } else {
+        return @intFromPtr(thread.impl.handle);
+    }
 }
 
 export fn hajr_thread_join(handle: usize) callconv(.c) i32 {
     if (comptime builtin.os.tag == .windows) {
-        _ = std.os.windows.WaitForSingleObject(@ptrFromInt(handle), std.os.windows.INFINITE) catch return -1;
-        std.os.windows.CloseHandle(@ptrFromInt(handle));
+        _ = WaitForSingleObject(@ptrFromInt(handle), INFINITE);
+        _ = CloseHandle(@ptrFromInt(handle));
     } else {
         const rc = std.posix.system.pthread_join(@ptrFromInt(handle), null);
         if (rc != .SUCCESS) return -1;
@@ -331,7 +337,7 @@ export fn hajr_thread_set_priority(handle: usize, priority: u8) callconv(.c) i32
             @as(i32, 0)  // THREAD_PRIORITY_NORMAL
         else
             @as(i32, 1); // THREAD_PRIORITY_ABOVE_NORMAL
-        if (std.os.windows.kernel32.SetThreadPriority(@ptrFromInt(handle), win_prio) == 0) {
+        if (SetThreadPriority(@ptrFromInt(handle), win_prio) == 0) {
             return -1;
         }
     } else {
@@ -351,74 +357,65 @@ export fn Zawra_Thread_Create(
 }
 
 export fn Zawra_Hajr_MemAlloc(size: usize) callconv(.c) ?*anyopaque {
-    // Allocate memory via standard POSIX mmap using std.posix.PROT (which maps to correct OS flags under 0.16.0)
-    const prot = std.posix.PROT{ .READ = true, .WRITE = true };
-    const ptr = std.posix.mmap(
-        null,
-        size,
-        prot,
-        std.posix.MAP{ .TYPE = .PRIVATE, .ANONYMOUS = true },
-        -1,
-        0,
-    ) catch return null;
-    return ptr.ptr;
+    const slice = hw.os.memAlloc(size) catch return null;
+    return slice.ptr;
 }
 
 export fn Zawra_Hajr_MemProtect(ptr: ?*anyopaque, size: usize, read: bool, write: bool) callconv(.c) i32 {
     const raw_ptr: [*]u8 = @ptrCast(ptr orelse return -1);
-    var prot = std.posix.system.PROT{};
-    if (read) prot.READ = true;
-    if (write) prot.WRITE = true;
-    const rc = std.posix.system.mprotect(@ptrCast(@alignCast(raw_ptr)), size, prot);
-    if (std.posix.errno(rc) != .SUCCESS) return -1;
+    hw.os.memProtect(raw_ptr, size, read, write) catch return -1;
     return 0;
 }
-
-
 
 export fn Zawra_Hajr_SignalEventLoop() callconv(.c) void {
     // Wakeup signal stub for WPE generic runloop
 }
 
-
-
 export fn __hajr_create_anonymous_ring(size: usize) callconv(.c) u64 {
-    const fd = std.os.linux.syscall2(.memfd_create, @intFromPtr("hajr-ring"), 1); // MFD_CLOEXEC
-    if (fd < 0) return 0;
-    _ = std.os.linux.syscall2(.ftruncate, @as(usize, @intCast(fd)), size);
-    return @as(u64, @intCast(fd));
+    if (comptime builtin.os.tag != .linux) {
+        return 0;
+    } else {
+        const fd = std.os.linux.syscall2(.memfd_create, @intFromPtr("hajr-ring"), 1); // MFD_CLOEXEC
+        if (fd < 0) return 0;
+        _ = std.os.linux.syscall2(.ftruncate, @as(usize, @intCast(fd)), size);
+        return @as(u64, @intCast(fd));
+    }
 }
 
 export fn __hajr_map_anonymous_ring(id: u64) callconv(.c) ?*anyopaque {
-    const fd: i32 = @intCast(id);
-    const size_or_err = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 2); // SEEK_END
-    if (size_or_err < 0) return null;
-    const buffer_len: usize = @intCast(size_or_err);
-    
-    // restore offset
-    _ = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 0); // SEEK_SET
-    
-    const prot = std.posix.PROT{ .READ = true, .WRITE = true };
-    const mmap_slice = std.posix.mmap(
-        null,
-        buffer_len,
-        prot,
-        std.posix.MAP{ .TYPE = .SHARED },
-        fd,
-        0,
-    ) catch return null;
-    
-    const ring_size = buffer_len - sandbox.RingConfig.METADATA_SIZE;
-    
-    const c_ring = hajr_ring_map(
-        @as([*]u8, @ptrCast(mmap_slice.ptr)),
-        buffer_len,
-        ring_size,
-        0,
-        0,
-    );
-    
-    return @ptrCast(c_ring);
+    if (comptime builtin.os.tag != .linux) {
+        return null;
+    } else {
+        const fd: i32 = @intCast(id);
+        const size_or_err = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 2); // SEEK_END
+        if (size_or_err < 0) return null;
+        const buffer_len: usize = @intCast(size_or_err);
+        
+        // restore offset
+        _ = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 0); // SEEK_SET
+        
+        const prot = std.posix.PROT{ .READ = true, .WRITE = true };
+        const mmap_slice = std.posix.mmap(
+            null,
+            buffer_len,
+            prot,
+            std.posix.MAP{ .TYPE = .SHARED },
+            fd,
+            0,
+        ) catch return null;
+        
+        const ring_size = buffer_len - sandbox.RingConfig.METADATA_SIZE;
+        
+        const c_ring = hajr_ring_map(
+            @as([*]u8, @ptrCast(mmap_slice.ptr)),
+            buffer_len,
+            ring_size,
+            0,
+            0,
+        );
+        
+        return @ptrCast(c_ring);
+    }
 }
 
 // ============================================================================
