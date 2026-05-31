@@ -422,31 +422,56 @@ export fn __hajr_map_anonymous_ring(id: u64) callconv(.c) ?*anyopaque {
 // Agnostic FileSystem FFI
 // ============================================================================
 
-export fn hajr_file_seek(handle: hw.os.OsHandle, offset: i64, origin: i32) callconv(.c) u64 {
+export fn Zawra_File_Seek(handle: hw.os.OsHandle, offset: i64, origin: i32) callconv(.c) u64 {
     const seek_origin: hw.os.SeekOrigin = @enumFromInt(origin);
     return hw.os.fileSeek(handle, offset, seek_origin) catch 0;
 }
 
-export fn hajr_file_stat(path: [*:0]const u8, info: *hw.os.FileInfo) callconv(.c) i32 {
+export fn Zawra_File_Stat(path: [*:0]const u8, info: *hw.os.FileInfo) callconv(.c) i32 {
     const path_slice = std.mem.span(path);
     const stat = hw.os.fileStat(path_slice) catch return -1;
     info.* = stat;
     return 0;
 }
 
-export fn hajr_file_access(path: [*:0]const u8, mode: u32) callconv(.c) i32 {
+export fn Zawra_File_StatFD(handle: hw.os.OsHandle, info: *hw.os.FileInfo) callconv(.c) i32 {
+    // Implement fstat-like behavior using raw linux syscalls for 100% stability
+    if (comptime builtin.os.tag == .linux) {
+        const Stat = extern struct {
+            dev: u64, ino: u64, nlink: u64, mode: u32, uid: u32, gid: u32, __pad0: u32,
+            rdev: u64, size: i64, blksize: i64, blocks: i64, atime: i64, atime_nsec: i64,
+            mtime: i64, mtime_nsec: i64, ctime: i64, ctime_nsec: i64, __unused: [3]i64,
+        };
+        var stat_buf: Stat = undefined;
+        // 5 is the syscall number for fstat on x86_64, but we should use the constant
+        const rc = std.os.linux.syscall2(.fstat, @as(usize, @intCast(handle)), @intFromPtr(&stat_buf));
+        if (rc != 0) return -1;
+        info.* = .{
+            .size = @as(u64, @intCast(stat_buf.size)),
+            .mtime = stat_buf.mtime,
+            .atime = stat_buf.atime,
+            .ctime = stat_buf.ctime,
+            .is_dir = (stat_buf.mode & 0o170000) == 0o040000,
+        };
+        return 0;
+    } else {
+        return -1;
+    }
+}
+
+export fn Zawra_File_Access(path: [*:0]const u8, mode: u32) callconv(.c) i32 {
     const path_slice = std.mem.span(path);
     const access_mode: hw.os.AccessMode = @enumFromInt(mode);
     return if (hw.os.fileAccess(path_slice, access_mode) catch false) 1 else 0;
 }
 
-export fn hajr_file_unlink(path: [*:0]const u8) callconv(.c) i32 {
+export fn Zawra_File_Unlink(path: [*:0]const u8) callconv(.c) i32 {
     const path_slice = std.mem.span(path);
     hw.os.fileUnlink(path_slice) catch return -1;
     return 0;
 }
 
-export fn hajr_file_mkdir(path: [*:0]const u8) callconv(.c) i32 {
+export fn Zawra_File_Mkdir(path: [*:0]const u8) callconv(.c) i32 {
     const path_slice = std.mem.span(path);
     hw.os.fileMkdir(path_slice) catch return -1;
     return 0;
