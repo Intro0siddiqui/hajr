@@ -73,7 +73,7 @@ pub const MitigationFlags = struct {
 
 fn applyPolicy(policy_type: ProcessMitigationPolicy, buffer: *const anyopaque, size: windows.SIZE_T) !void {
     const ok = SetProcessMitigationPolicy(policy_type, buffer, size);
-    if (ok == 0) return error.MitigationPolicyFailed;
+    if (ok == .FALSE) return error.MitigationPolicyFailed;
 }
 
 pub fn apply(flags: MitigationFlags) !void {
@@ -139,7 +139,7 @@ pub fn applyLowIntegrity() !void {
     const TokenIntegrityLevel: u32 = 0x19;
 
     var token: windows.HANDLE = undefined;
-    if (windows.OpenProcessToken(windows.GetCurrentProcess(), TOKEN_QUERY | TOKEN_WRITE, &token) == 0) return error.TokenOpenFailed;
+    if (windows.OpenProcessToken(windows.GetCurrentProcess(), TOKEN_QUERY | TOKEN_WRITE, &token) == .FALSE) return error.TokenOpenFailed;
     defer _ = windows.CloseHandle(token);
 
     const TOKEN_MANDATORY_LABEL = extern struct {
