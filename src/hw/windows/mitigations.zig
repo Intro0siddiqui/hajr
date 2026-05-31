@@ -57,7 +57,7 @@ extern "kernel32" fn SetProcessMitigationPolicy(
     policy: ProcessMitigationPolicy,
     lpBuffer: *const anyopaque,
     dwLength: windows.SIZE_T,
-) callconv(windows.WINAPI) windows.BOOL;
+) callconv(.winapi) windows.BOOL;
 
 pub const MitigationFlags = struct {
     dep: bool = true,
