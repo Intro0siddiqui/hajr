@@ -16,7 +16,7 @@ fn restoreGuardPage(addr: usize) void {
 }
 
 test "Guard pages: memory allocation has guard pages around usable region" {
-    if (builtin.os.tag != .linux) return error.Skip;
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
 
     const page_size = std.heap.page_size_min;
     const region = try os_abs.memAlloc(page_size * 4);
@@ -38,7 +38,7 @@ test "Guard pages: memory allocation has guard pages around usable region" {
 }
 
 test "Guard pages: usable region is fully readable and writable" {
-    if (builtin.os.tag == .windows) return error.Skip;
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const page_size = std.heap.page_size_min;
     const region = try os_abs.memAlloc(page_size * 2);
@@ -49,7 +49,7 @@ test "Guard pages: usable region is fully readable and writable" {
 }
 
 test "Guard pages: memFree on guarded region doesn't fault" {
-    if (builtin.os.tag == .windows) return error.Skip;
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const page_size = std.heap.page_size_min;
     const region = try os_abs.memAlloc(page_size);
@@ -64,7 +64,7 @@ test "Guard pages: memFree on guarded region doesn't fault" {
 }
 
 test "Guard pages: multiple allocations don't interfere" {
-    if (builtin.os.tag == .windows) return error.Skip;
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const page_size = std.heap.page_size_min;
     var regions: [5][]align(page_size) u8 = undefined;
@@ -80,7 +80,7 @@ test "Guard pages: multiple allocations don't interfere" {
 }
 
 test "Guard pages: small allocation (1 byte) still gets guard pages" {
-    if (builtin.os.tag == .windows) return error.Skip;
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const region = try os_abs.memAlloc(1);
     defer os_abs.memFree(region);
@@ -91,7 +91,7 @@ test "Guard pages: small allocation (1 byte) still gets guard pages" {
 }
 
 test "Guard pages: memProtect on usable region doesn't affect guard pages" {
-    if (builtin.os.tag == .windows) return error.Skip;
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const page_size = std.heap.page_size_min;
     const region = try os_abs.memAlloc(page_size);

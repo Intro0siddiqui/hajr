@@ -168,53 +168,86 @@ pub fn fileRead(handle: OsHandle, buffer: []u8, offset: u64) !u64 {
 }
 
 pub fn fileSeek(handle: OsHandle, offset: i64, origin: SeekOrigin) !u64 {
-    var file = std.fs.File{ .handle = handle };
-    switch (origin) {
-        .start => try file.seekTo(@intCast(offset)),
-        .current => try file.seekBy(offset),
-        .end => {
-            const size = try file.getEndPos();
-            const target = @as(i64, @intCast(size)) + offset;
-            if (target < 0) return error.InvalidOffset;
-            try file.seekTo(@intCast(target));
-        },
+    if (comptime builtin.os.tag == .windows) {
+        return windows.file_io.fileSeek(handle, offset, @intFromEnum(origin));
+    } else {
+        const whence: c_int = switch (origin) {
+            .start => @as(c_int, @intCast(std.posix.SEEK.SET)),
+            .current => @as(c_int, @intCast(std.posix.SEEK.CUR)),
+            .end => @as(c_int, @intCast(std.posix.SEEK.END)),
+        };
+        const rc = if (comptime std.posix.lfs64_abi)
+            std.posix.system.lseek64(handle, offset, whence)
+        else
+            std.posix.system.lseek(handle, offset, whence);
+        const err = std.posix.errno(rc);
+        if (err != .SUCCESS) return switch (err) {
+            .BADF => error.InvalidFileDescriptor,
+            .INVAL => error.InvalidArgument,
+            .SPIPE => error.Unseekable,
+            .NXIO => error.NoDevice,
+            else => error.SeekFailed,
+        };
+        return @as(u64, @intCast(rc));
     }
-    return try file.getPos();
 }
 
 pub fn fileStat(path: []const u8) !FileInfo {
-    const stat = try std.fs.cwd().statFile(path);
+    var threaded_io = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer threaded_io.deinit();
+    const io = threaded_io.io();
+
+    const dir = std.Io.Dir.cwd();
+    const stat = try dir.statFile(io, path, .{});
+
+    const mtime_sec = @as(i64, @intCast(@divTrunc(stat.mtime.nanoseconds, std.time.ns_per_s)));
+    const atime_sec = if (stat.atime) |at|
+        @as(i64, @intCast(@divTrunc(at.nanoseconds, std.time.ns_per_s)))
+    else
+        0;
+    const ctime_sec = @as(i64, @intCast(@divTrunc(stat.ctime.nanoseconds, std.time.ns_per_s)));
+
     return FileInfo{
         .size = stat.size,
-        .mtime = @intCast(@divTrunc(stat.mtime, std.time.ns_per_s)),
-        .atime = @intCast(@divTrunc(stat.atime, std.time.ns_per_s)),
-        .ctime = @intCast(@divTrunc(stat.ctime, std.time.ns_per_s)),
+        .mtime = mtime_sec,
+        .atime = atime_sec,
+        .ctime = ctime_sec,
         .is_dir = stat.kind == .directory,
     };
 }
 
 pub fn fileAccess(path: []const u8, mode: AccessMode) !bool {
-    if (comptime builtin.os.tag == .windows) {
-        _ = std.fs.cwd().statFile(path) catch return false;
-        return true;
-    } else {
-        const amode: u32 = switch (mode) {
-            .exists => std.posix.F_OK,
-            .read => std.posix.R_OK,
-            .write => std.posix.W_OK,
-            .execute => std.posix.X_OK,
-        };
-        std.posix.access(path, amode) catch return false;
-        return true;
-    }
+    var threaded_io = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer threaded_io.deinit();
+    const io = threaded_io.io();
+
+    const dir = std.Io.Dir.cwd();
+    const opts = switch (mode) {
+        .exists => std.Io.Dir.AccessOptions{},
+        .read => std.Io.Dir.AccessOptions{ .read = true },
+        .write => std.Io.Dir.AccessOptions{ .write = true },
+        .execute => std.Io.Dir.AccessOptions{ .execute = true },
+    };
+    dir.access(io, path, opts) catch return false;
+    return true;
 }
 
 pub fn fileUnlink(path: []const u8) !void {
-    try std.fs.cwd().deleteFile(path);
+    var threaded_io = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer threaded_io.deinit();
+    const io = threaded_io.io();
+
+    const dir = std.Io.Dir.cwd();
+    try dir.deleteFile(io, path);
 }
 
 pub fn fileMkdir(path: []const u8) !void {
-    try std.fs.cwd().makeDir(path);
+    var threaded_io = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    defer threaded_io.deinit();
+    const io = threaded_io.io();
+
+    const dir = std.Io.Dir.cwd();
+    try dir.createDir(io, path, std.Io.Dir.Permissions.default_dir);
 }
 
 pub fn monotonicTimestamp() u64 {

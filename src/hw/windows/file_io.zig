@@ -13,6 +13,8 @@ const FILE_SHARE_READ: windows.DWORD = 0x00000001;
 const OPEN_ALWAYS: windows.DWORD = 4;
 const FILE_ATTRIBUTE_NORMAL: windows.DWORD = 0x00000080;
 const FILE_BEGIN: windows.DWORD = 0;
+const FILE_CURRENT: windows.DWORD = 1;
+const FILE_END: windows.DWORD = 2;
 
 // Win32 API Functions
 extern "kernel32" fn CreateFileW(
@@ -110,4 +112,18 @@ pub fn fileRead(handle: OsHandle, buffer: []u8, offset: u64) !u64 {
     const ok = ReadFile(handle, buffer.ptr, @intCast(buffer.len), &read, null);
     if (!ok) return error.ReadFailed;
     return read;
+}
+
+/// Seek to a position in a file. Returns the new offset.
+pub fn fileSeek(handle: OsHandle, offset: i64, origin: i32) !u64 {
+    const move_method: windows.DWORD = switch (origin) {
+        0 => FILE_BEGIN,
+        1 => FILE_CURRENT,
+        2 => FILE_END,
+        else => return error.InvalidArgument,
+    };
+    var new_pos: windows.LARGE_INTEGER = 0;
+    const ok = SetFilePointerEx(handle, offset, &new_pos, move_method);
+    if (!ok) return error.SeekFailed;
+    return @intCast(new_pos);
 }

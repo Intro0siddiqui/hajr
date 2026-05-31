@@ -420,3 +420,37 @@ export fn __hajr_map_anonymous_ring(id: u64) callconv(.c) ?*anyopaque {
     
     return @ptrCast(c_ring);
 }
+
+// ============================================================================
+// Agnostic FileSystem FFI
+// ============================================================================
+
+export fn hajr_file_seek(handle: hw.os.OsHandle, offset: i64, origin: i32) callconv(.c) u64 {
+    const seek_origin: hw.os.SeekOrigin = @enumFromInt(origin);
+    return hw.os.fileSeek(handle, offset, seek_origin) catch 0;
+}
+
+export fn hajr_file_stat(path: [*:0]const u8, info: *hw.os.FileInfo) callconv(.c) i32 {
+    const path_slice = std.mem.span(path);
+    const stat = hw.os.fileStat(path_slice) catch return -1;
+    info.* = stat;
+    return 0;
+}
+
+export fn hajr_file_access(path: [*:0]const u8, mode: u32) callconv(.c) i32 {
+    const path_slice = std.mem.span(path);
+    const access_mode: hw.os.AccessMode = @enumFromInt(mode);
+    return if (hw.os.fileAccess(path_slice, access_mode) catch false) 1 else 0;
+}
+
+export fn hajr_file_unlink(path: [*:0]const u8) callconv(.c) i32 {
+    const path_slice = std.mem.span(path);
+    hw.os.fileUnlink(path_slice) catch return -1;
+    return 0;
+}
+
+export fn hajr_file_mkdir(path: [*:0]const u8) callconv(.c) i32 {
+    const path_slice = std.mem.span(path);
+    hw.os.fileMkdir(path_slice) catch return -1;
+    return 0;
+}
