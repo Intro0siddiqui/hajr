@@ -124,6 +124,6 @@ pub fn fileSeek(handle: OsHandle, offset: i64, origin: i32) !u64 {
     };
     var new_pos: windows.LARGE_INTEGER = 0;
     const ok = SetFilePointerEx(handle, offset, &new_pos, move_method);
-    if (!ok) return error.SeekFailed;
+    if (ok == windows.FALSE) return error.SeekFailed;
     return @intCast(new_pos);
 }

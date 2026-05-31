@@ -58,7 +58,7 @@ pub fn memFree(region: []align(page_size) u8) void {
 /// Equivalent to: VirtualProtect
 pub fn memProtect(ptr: [*]u8, len: usize, read: bool, write: bool) !void {
     var old_protect: windows.DWORD = undefined;
-    const protect = if (!read and !write)
+    const protect: windows.DWORD = if (!read and !write)
         PAGE_NOACCESS
     else if (read and !write)
         PAGE_READONLY
