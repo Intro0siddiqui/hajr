@@ -1,7 +1,12 @@
 const std = @import("std");
 const hw = @import("../hw/mod.zig");
 const sandbox = @import("../core/sandbox.zig");
+const lockdown = @import("lockdown.zig");
 const builtin = @import("builtin");
+
+comptime {
+    _ = lockdown;
+}
 
 // ============================================================================
 // JavaScriptCore Zero-Copy FFI Bindings (Task 2)
