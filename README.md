@@ -4,7 +4,7 @@ Hajr is a hardware-enforced sandbox and zero-copy IPC layer — the isolation su
 
 It serves the same role as **Chrome's Sandbox + Mojo IPC**, but replaces OS process boundaries with MPK/MTE hardware keys and lock-free ring buffers for ~200ns cross-thread IPC.
 
-> **Note:** Hajr is the *isolation layer only*. Browser-level subsystems like networking (`z-net`), storage (`BrowserDB`), and rendering (`Gecko`) are independent components built *on top* of Hajr. They are not part of Hajr itself and live in their own repositories.
+> **Note:** Hajr is the *isolation layer only*. Browser-level subsystems like networking (`z-net`), storage (`BrowserDB`), and rendering engines are independent components built *on top* of Hajr. They are not part of Hajr itself and live in their own repositories.
 
 ## How It Works
 
@@ -28,7 +28,7 @@ Hajr enforces a strict 4-tier security model using protection keys:
 | :--- | :--- | :--- |
 | **0** | **Root** | System initialization and global policy management. |
 | **1** | **Trusted** | Safe subsystems like the Network stack (z-net) and Storage (BrowserDB). |
-| **2** | **Untrusted** | Dangerous components like Rendering (Gecko) and JavaScript execution (JavaScriptCore). |
+| **2** | **Untrusted** | Dangerous components like rendering engines and script execution environments. |
 | **3** | **Isolated** | Highly restricted 3rd-party plugins and external handles. |
 
 ## Developer Guide
@@ -61,4 +61,4 @@ zig build -Dtarget=aarch64-macos
 *   `src/core/`: The core sandbox architecture and hardware/software fallback key management.
 *   `src/ipc/`: The lock-free, zero-copy ring buffer implementation.
 *   `src/hw/`: The Hardware Abstraction Layer mapping Zig to raw MPK/MTE operations and OS-specific fallbacks.
-*   `src/sandbox/`: Sandbox runtime — memory layout, event routing, poison protocol, JavaScriptCore FFI bindings.
+*   `src/sandbox/`: Sandbox runtime — memory layout, event routing, poison protocol, script engine FFI bindings.
