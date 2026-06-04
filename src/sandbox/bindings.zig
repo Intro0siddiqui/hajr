@@ -378,10 +378,11 @@ export fn Zawra_Hajr_SignalEventLoop() callconv(.c) void {
 
 export fn __hajr_create_anonymous_ring(size: usize) callconv(.c) u64 {
     if (comptime builtin.os.tag != .linux) {
-        return 0;
+        return std.math.maxInt(u64);
     } else {
-        const fd = std.os.linux.syscall2(.memfd_create, @intFromPtr("hajr-ring"), 1); // MFD_CLOEXEC
-        if (fd < 0) return 0;
+        const name_ptr = @intFromPtr("hajr-ring");
+        const fd = std.os.linux.syscall2(.memfd_create, name_ptr, std.os.linux.MFD.CLOEXEC);
+        if (fd < 0) return std.math.maxInt(u64);
         _ = std.os.linux.syscall2(.ftruncate, @as(usize, @intCast(fd)), size);
         return @as(u64, @intCast(fd));
     }
