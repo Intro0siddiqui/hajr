@@ -307,7 +307,7 @@ pub fn exitProcess(code: u8) noreturn {
     if (builtin.os.tag == .windows) {
         windows.time.exitProcess(code);
     } else {
-        std.posix.exit(code);
+        std.process.exit(code);
     }
 }
 
