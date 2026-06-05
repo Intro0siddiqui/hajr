@@ -208,9 +208,6 @@ export fn hajr_ring_free(c_ring: ?*C_HardenedRingBuffer) callconv(.c) void {
         if (r.signal_fd != -1) {
             if (comptime builtin.os.tag != .windows) {
                 _ = std.posix.system.close(r.signal_fd);
-            } else {
-                // Windows handles are pointers
-                _ = std.os.windows.kernel32.CloseHandle(@ptrFromInt(@as(usize, @intCast(r.signal_fd))));
             }
         }
         std.heap.c_allocator.destroy(r);
@@ -501,10 +498,12 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
         buffer_len = @intCast(size_or_err);
         _ = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 0); // SEEK_SET
     } else {
-        const size = std.posix.system.lseek(fd, 0, 2); // SEEK_END
-        if (size < 0) return null;
-        buffer_len = @intCast(size);
-        _ = std.posix.system.lseek(fd, 0, 0); // SEEK_SET
+        if (comptime builtin.os.tag != .windows) {
+            const size = std.posix.system.lseek(fd, 0, 2); // SEEK_END
+            if (size < 0) return null;
+            buffer_len = @intCast(size);
+            _ = std.posix.system.lseek(fd, 0, 0); // SEEK_SET
+        }
     }
     
     const prot = std.posix.PROT{ .READ = true, .WRITE = true };

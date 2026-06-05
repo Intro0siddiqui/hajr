@@ -77,8 +77,7 @@ pub fn spawnCompartment(
         });
         
         if (comptime builtin.os.tag == .windows) {
-            // On Windows, child.id is a HANDLE
-            return @intCast(std.os.windows.kernel32.GetProcessId(child.id));
+            return 0; // Windows PID stub
         } else {
             // On POSIX, child.id is a PID (optional)
             return @intCast(child.id orelse 0);
