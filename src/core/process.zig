@@ -75,6 +75,6 @@ pub fn spawnCompartment(
         const child = try std.process.spawn(io, .{
             .argv = argv,
         });
-        return @intCast(child.id);
+        return @intCast(child.id orelse 0);
     }
 }
