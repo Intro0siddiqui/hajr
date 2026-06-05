@@ -472,9 +472,9 @@ export fn __hajr_create_anonymous_ring(size: usize) callconv(.c) u64 {
     } else if (comptime builtin.os.tag == .macos) {
         const name = "/hajr-ring-m2-shm"; 
         const oflag = std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true };
-        const fd = std.posix.system.open(name, oflag, 0o600);
+        const fd = std.posix.system.open(name, oflag, @as(u32, 0o600));
         if (fd < 0) {
-            return @intCast(std.posix.system.open(name, std.posix.O{ .ACCMODE = .RDWR }, 0));
+            return @intCast(std.posix.system.open(name, std.posix.O{ .ACCMODE = .RDWR }, @as(u32, 0)));
         }
         _ = std.posix.system.ftruncate(fd, @as(i64, @intCast(size)));
         return @as(u64, @intCast(fd));

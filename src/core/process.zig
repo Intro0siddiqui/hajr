@@ -68,9 +68,12 @@ pub fn spawnCompartment(
         }
     } else {
         // Fallback for other OSs (like macOS)
-        const child = try std.process.spawn(allocator, .{
+        var threaded_io = std.Io.Threaded.init(allocator, .{});
+        defer threaded_io.deinit();
+        const io = threaded_io.io();
+        
+        const child = try std.process.spawn(io, .{
             .argv = argv,
-            // .cwd = ...
         });
         return @intCast(child.id);
     }
