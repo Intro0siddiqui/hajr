@@ -1,6 +1,7 @@
 const std = @import("std");
 const hw = @import("../hw/mod.zig");
 const sandbox = @import("../core/sandbox.zig");
+const process = @import("../core/process.zig");
 const lockdown = @import("lockdown.zig");
 const builtin = @import("builtin");
 
@@ -126,6 +127,7 @@ pub const C_HardenedRingBuffer = extern struct {
     size: usize,
     key_val: u32,
     tier_val: u8,
+    signal_fd: i32,
 };
 
 export fn hajr_ring_init(
@@ -145,6 +147,14 @@ export fn hajr_ring_init(
     metadata.poison_bit.store(false, .release);
     metadata.poison_cause.store(0, .release);
 
+    var s_fd: i32 = -1;
+    if (comptime builtin.os.tag == .linux) {
+        const res = std.os.linux.syscall2(.eventfd, 0, std.os.linux.EFD.CLOEXEC | std.os.linux.EFD.NONBLOCK);
+        if (std.os.linux.errno(res) == .SUCCESS) {
+            s_fd = @intCast(res);
+        }
+    }
+
     c_ring.* = .{
         .memory_ptr = buffer,
         .memory_len = buffer_len,
@@ -153,6 +163,7 @@ export fn hajr_ring_init(
         .size = size,
         .key_val = key_value,
         .tier_val = tier_value,
+        .signal_fd = s_fd,
     };
     return c_ring;
 }
@@ -163,6 +174,17 @@ export fn hajr_ring_map(
     size: usize,
     key_value: u32,
     tier_value: u8,
+) callconv(.c) ?*C_HardenedRingBuffer {
+    return hajr_ring_map_with_signal(buffer, buffer_len, size, key_value, tier_value, -1);
+}
+
+export fn hajr_ring_map_with_signal(
+    buffer: [*]u8,
+    buffer_len: usize,
+    size: usize,
+    key_value: u32,
+    tier_value: u8,
+    signal_fd: i32,
 ) callconv(.c) ?*C_HardenedRingBuffer {
     const allocator = std.heap.c_allocator;
     const c_ring = allocator.create(C_HardenedRingBuffer) catch return null;
@@ -175,12 +197,17 @@ export fn hajr_ring_map(
         .size = size,
         .key_val = key_value,
         .tier_val = tier_value,
+        .signal_fd = signal_fd,
     };
     return c_ring;
 }
 
+
 export fn hajr_ring_free(c_ring: ?*C_HardenedRingBuffer) callconv(.c) void {
     if (c_ring) |r| {
+        if (r.signal_fd != -1) {
+            _ = std.os.linux.syscall1(.close, @as(usize, @intCast(r.signal_fd)));
+        }
         std.heap.c_allocator.destroy(r);
     }
 }
@@ -268,6 +295,11 @@ export fn __zawra_free_sandbox(id: u32) callconv(.c) void {
 
 export fn hajr_ring_signal(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
     const ring = c_ring orelse return -1;
+    if (ring.signal_fd != -1) {
+        const val: u64 = 1;
+        _ = std.os.linux.syscall3(.write, @as(usize, @intCast(ring.signal_fd)), @intFromPtr(&val), 8);
+        return 1;
+    }
     const meta = ring.metadata_ptr;
     const addr = @as(*volatile u32, @ptrCast(&meta.write_index));
     hw.os.futexWake(addr, 1);
@@ -276,6 +308,11 @@ export fn hajr_ring_signal(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
 
 export fn hajr_ring_wait(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
     const ring = c_ring orelse return -1;
+    if (ring.signal_fd != -1) {
+        var val: u64 = 0;
+        _ = std.os.linux.syscall3(.read, @as(usize, @intCast(ring.signal_fd)), @intFromPtr(&val), 8);
+        return 1;
+    }
     const meta = ring.metadata_ptr;
     const current = meta.write_index.load(.acquire);
     const read_idx = meta.read_index.load(.acquire);
@@ -285,6 +322,43 @@ export fn hajr_ring_wait(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
     hw.os.futexWait(addr, expected);
     return 1;
 }
+
+var g_other_pidfd: i32 = -1;
+
+export fn hajr_ipc_set_other_pidfd(pidfd: i32) callconv(.c) void {
+    g_other_pidfd = pidfd;
+}
+
+/// Send a file descriptor over the IPC ring.
+/// In the pure ring model, we just return the FD number as a handle.
+export fn hajr_ipc_send_fd(c_ring: ?*C_HardenedRingBuffer, fd: i32) callconv(.c) i32 {
+    _ = c_ring;
+    return fd; 
+}
+
+/// Receive a file descriptor from the IPC ring.
+/// Uses pidfd_getfd to pull the FD from the other process.
+export fn hajr_ipc_recv_fd(c_ring: ?*C_HardenedRingBuffer, handle: i32) callconv(.c) i32 {
+    _ = c_ring;
+    if (g_other_pidfd == -1) {
+        // Attempt to find ZAWRA_HAJR_PARENT_PIDFD if not set
+        if (comptime builtin.os.tag == .linux) {
+            // We use std.posix.getenv or raw check
+            // For now, let's assume it was set via hajr_ipc_set_other_pidfd
+        }
+        return -1;
+    }
+    
+    if (comptime builtin.os.tag == .linux) {
+        const res = std.os.linux.syscall3(.pidfd_getfd, @as(usize, @intCast(g_other_pidfd)), @as(usize, @intCast(handle)), 0);
+        if (std.os.linux.errno(res) == .SUCCESS) {
+            return @intCast(res);
+        }
+    }
+    return -1;
+}
+
+
 
 /// Universal Monotonic Clock Bridge
 /// CRITICAL: OS-agnostic time-keeping for WebKit/WTF.
@@ -389,6 +463,10 @@ export fn __hajr_create_anonymous_ring(size: usize) callconv(.c) u64 {
 }
 
 export fn __hajr_map_anonymous_ring(id: u64) callconv(.c) ?*anyopaque {
+    return __hajr_map_anonymous_ring_ex(id, -1);
+}
+
+export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*anyopaque {
     if (comptime builtin.os.tag != .linux) {
         return null;
     } else {
@@ -400,7 +478,7 @@ export fn __hajr_map_anonymous_ring(id: u64) callconv(.c) ?*anyopaque {
         // restore offset
         _ = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 0); // SEEK_SET
         
-        const prot = std.posix.PROT{ .READ = true, .WRITE = true };
+        const prot = std.posix.system.PROT{ .READ = true, .WRITE = true };
         const mmap_slice = std.posix.mmap(
             null,
             buffer_len,
@@ -412,12 +490,13 @@ export fn __hajr_map_anonymous_ring(id: u64) callconv(.c) ?*anyopaque {
         
         const ring_size = buffer_len - sandbox.RingConfig.METADATA_SIZE;
         
-        const c_ring = hajr_ring_map(
+        const c_ring = hajr_ring_map_with_signal(
             @as([*]u8, @ptrCast(mmap_slice.ptr)),
             buffer_len,
             ring_size,
             0,
             0,
+            signal_fd,
         );
         
         return @ptrCast(c_ring);
@@ -482,3 +561,32 @@ export fn Zawra_File_Mkdir(path: [*:0]const u8) callconv(.c) i32 {
     hw.os.fileMkdir(path_slice) catch return -1;
     return 0;
 }
+
+export fn hajr_spawn_compartment(
+    path: [*:0]const u8,
+    argv: [*]const ?[*:0]const u8,
+    out_socket: *i32,
+) callconv(.c) i32 {
+    const allocator = std.heap.c_allocator;
+    
+    var zig_argv: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer zig_argv.deinit(allocator);
+    
+    var i: usize = 0;
+    while (argv[i]) |arg| : (i += 1) {
+        zig_argv.append(allocator, std.mem.span(arg)) catch return -1;
+    }
+    
+    const pid = process.spawnCompartment(allocator, std.mem.span(path), zig_argv.items, out_socket) catch return -1;
+    
+    // UIProcess (Parent) needs to keep the child's pidfd to pull FDs from it
+    if (comptime builtin.os.tag == .linux) {
+        const res = std.os.linux.syscall2(.pidfd_open, pid, 0);
+        if (std.os.linux.errno(res) == .SUCCESS) {
+            g_other_pidfd = @intCast(res);
+        }
+    }
+
+    return @intCast(pid);
+}
+
