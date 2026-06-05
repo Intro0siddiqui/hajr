@@ -345,6 +345,12 @@ export fn hajr_ring_wait(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
     return 1;
 }
 
+export fn hajr_ring_get_signal_fd(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
+    const ring = c_ring orelse return -1;
+    return ring.signal_fd;
+}
+
+
 var g_other_pidfd: i32 = -1;
 
 export fn hajr_ipc_set_other_pidfd(pidfd: i32) callconv(.c) void {
