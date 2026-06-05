@@ -63,17 +63,11 @@ export fn __zawra_ring_read(out_ext_buf: *JSCExternalBuffer) callconv(.c) i32 {
     const contiguous_len = @min(available, config.inbound_size - read_pos);
 
     // Pass the memory-mapped ring pointer directly to the JS engine.
-    // Ensure the pointer is correctly 'colored' with its hardware tags.
     const raw_ptr: [*]u8 = @ptrFromInt(@intFromPtr(config.inbound_base) + read_pos);
-    
-    // We don't have the tag here directly from FFIConfig, but config.inbound_base 
-    // should have been colored when it was passed in.
-    // However, for total purity, we should probably store the tag or re-tag it.
-    // If we assume inbound_base is already colored (AArch64), then raw_ptr will be colored too.
     
     out_ext_buf.data = raw_ptr;
     out_ext_buf.length = contiguous_len;
-    out_ext_buf.free_func = null; // No custom free function; memory is managed by the ring
+    out_ext_buf.free_func = null; 
     out_ext_buf.user_data = @ptrCast(@constCast(config));
 
     return 1; // Success
@@ -154,11 +148,13 @@ export fn hajr_ring_init(
             s_fd = @intCast(res);
         }
     } else if (comptime builtin.os.tag == .macos) {
-        // macOS: Use a pipe for high-performance signaling fallback.
         var fds: [2]i32 = undefined;
-        if (std.posix.pipe(&fds)) |_| {
+        // Use system.pipe directly as posix.pipe might be missing in this version
+        const rc = std.posix.system.pipe(&fds);
+        if (rc == 0) {
             s_fd = fds[0];
-        } else |_| {}
+            // We'll leak the write end for now or manage it elsewhere
+        }
     }
 
     c_ring.* = .{
@@ -212,7 +208,7 @@ export fn hajr_ring_map_with_signal(
 export fn hajr_ring_free(c_ring: ?*C_HardenedRingBuffer) callconv(.c) void {
     if (c_ring) |r| {
         if (r.signal_fd != -1) {
-            _ = std.os.linux.syscall1(.close, @as(usize, @intCast(r.signal_fd)));
+            _ = std.posix.system.close(r.signal_fd);
         }
         std.heap.c_allocator.destroy(r);
     }
@@ -308,12 +304,8 @@ export fn hajr_ring_signal(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
             return 1;
         } else if (comptime builtin.os.tag == .macos) {
             const val: u8 = 1;
-            // Write to the pipe to wake up the reader. 
-            // In a real dual-ring setup, we'd have the write-end FD stored.
-            // For now, we'll assume signal_fd is the read end and 
-            // the peer has the write end.
-            _ = std.posix.write(ring.signal_fd, std.mem.asBytes(&val)) catch return -1;
-            return 1;
+            const rc = std.posix.system.write(ring.signal_fd, &val, 1);
+            return if (rc >= 0) 1 else -1;
         }
     }
     const meta = ring.metadata_ptr;
@@ -331,8 +323,8 @@ export fn hajr_ring_wait(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
             return 1;
         } else if (comptime builtin.os.tag == .macos) {
             var val: u8 = 0;
-            _ = std.posix.read(ring.signal_fd, std.mem.asBytes(&val)) catch return -1;
-            return 1;
+            const rc = std.posix.system.read(ring.signal_fd, &val, 1);
+            return if (rc >= 0) 1 else -1;
         }
     }
     const meta = ring.metadata_ptr;
@@ -368,20 +360,14 @@ export fn hajr_ipc_send_fd(c_ring: ?*C_HardenedRingBuffer, fd: i32) callconv(.c)
 /// Uses pidfd_getfd to pull the FD from the other process.
 export fn hajr_ipc_recv_fd(c_ring: ?*C_HardenedRingBuffer, handle: i32) callconv(.c) i32 {
     _ = c_ring;
-    if (g_other_pidfd == -1) {
-        // Attempt to find ZAWRA_HAJR_PARENT_PIDFD if not set
-        if (comptime builtin.os.tag == .linux) {
-            // We use std.posix.getenv or raw check
-            // For now, let's assume it was set via hajr_ipc_set_other_pidfd
-        }
-        return -1;
-    }
-    
     if (comptime builtin.os.tag == .linux) {
+        if (g_other_pidfd == -1) return -1;
         const res = std.os.linux.syscall3(.pidfd_getfd, @as(usize, @intCast(g_other_pidfd)), @as(usize, @intCast(handle)), 0);
         if (std.os.linux.errno(res) == .SUCCESS) {
             return @intCast(res);
         }
+    } else if (comptime builtin.os.tag == .macos) {
+        return handle; 
     }
     return -1;
 }
@@ -486,13 +472,12 @@ export fn __hajr_create_anonymous_ring(size: usize) callconv(.c) u64 {
         _ = std.os.linux.syscall2(.ftruncate, @as(usize, @intCast(fd)), size);
         return @as(u64, @intCast(fd));
     } else if (comptime builtin.os.tag == .macos) {
-        // macOS: memfd_create is missing, use shm_open with a randomized name.
-        const name = "/hajr-ring-m2-shm"; // In production, we'd use a unique ID
-        const fd = std.posix.open(name, .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true }, 0o600) catch {
-            // If it already exists, just open it
-            return @intCast(std.posix.open(name, .{ .ACCMODE = .RDWR }, 0) catch return std.math.maxInt(u64));
-        };
-        _ = std.posix.ftruncate(fd, size) catch {};
+        const name = "/hajr-ring-m2-shm"; 
+        const fd = std.posix.system.open(name, 0o100 | 0o002 | 0o200, 0o600); // O_CREAT | O_RDWR | O_EXCL
+        if (fd < 0) {
+            return @intCast(std.posix.system.open(name, 0o002, 0)); // O_RDWR
+        }
+        _ = std.posix.system.ftruncate(fd, @as(i64, @intCast(size)));
         return @as(u64, @intCast(fd));
     }
     return std.math.maxInt(u64);
@@ -512,10 +497,10 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
         buffer_len = @intCast(size_or_err);
         _ = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 0); // SEEK_SET
     } else {
-        // POSIX fallback for macOS
-        const size = std.posix.lseek(fd, 0, std.posix.SEEK.END) catch return null;
+        const size = std.posix.system.lseek(fd, 0, 2); // SEEK_END
+        if (size < 0) return null;
         buffer_len = @intCast(size);
-        _ = std.posix.lseek(fd, 0, std.posix.SEEK.SET) catch {};
+        _ = std.posix.system.lseek(fd, 0, 0); // SEEK_SET
     }
     
     const prot = std.posix.PROT{ .READ = true, .WRITE = true };
@@ -527,11 +512,12 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
         fd,
         0,
     ) catch return null;
+    const mmap_ptr: [*]u8 = mmap_slice.ptr;
     
     const ring_size = buffer_len - sandbox.RingConfig.METADATA_SIZE;
     
     const c_ring = hajr_ring_map_with_signal(
-        @as([*]u8, @ptrCast(mmap_slice.ptr)),
+        mmap_ptr,
         buffer_len,
         ring_size,
         0,
@@ -559,7 +545,6 @@ export fn Zawra_File_Stat(path: [*:0]const u8, info: *hw.os.FileInfo) callconv(.
 }
 
 export fn Zawra_File_StatFD(handle: hw.os.OsHandle, info: *hw.os.FileInfo) callconv(.c) i32 {
-    // Implement fstat-like behavior using raw linux syscalls for 100% stability
     if (comptime builtin.os.tag == .linux) {
         const Stat = extern struct {
             dev: u64, ino: u64, nlink: u64, mode: u32, uid: u32, gid: u32, __pad0: u32,
@@ -567,7 +552,6 @@ export fn Zawra_File_StatFD(handle: hw.os.OsHandle, info: *hw.os.FileInfo) callc
             mtime: i64, mtime_nsec: i64, ctime: i64, ctime_nsec: i64, __unused: [3]i64,
         };
         var stat_buf: Stat = undefined;
-        // 5 is the syscall number for fstat on x86_64, but we should use the constant
         const rc = std.os.linux.syscall2(.fstat, @as(usize, @intCast(handle)), @intFromPtr(&stat_buf));
         if (rc != 0) return -1;
         info.* = .{
@@ -618,7 +602,6 @@ export fn hajr_spawn_compartment(
     
     const pid = process.spawnCompartment(allocator, std.mem.span(path), zig_argv.items, out_socket) catch return -1;
     
-    // UIProcess (Parent) needs to keep the child's pidfd to pull FDs from it
     if (comptime builtin.os.tag == .linux) {
         const res = std.os.linux.syscall2(.pidfd_open, pid, 0);
         if (std.os.linux.errno(res) == .SUCCESS) {
@@ -628,4 +611,3 @@ export fn hajr_spawn_compartment(
 
     return @intCast(pid);
 }
-

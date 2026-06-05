@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const hw = @import("../hw/mod.zig");
-const posix = std.posix;
 
 pub const SpawnError = error{
     SpawnFailed,
@@ -33,7 +32,6 @@ pub fn spawnCompartment(
             }
         }
 
-        // We'll prepare a static environment for now to avoid allocations
         const envp = [_:null]?[*:0]const u8{null};
 
         // On Linux, we use namespaces and MPK
@@ -70,7 +68,7 @@ pub fn spawnCompartment(
         }
     } else {
         // Fallback for other OSs (like macOS)
-        var child = std.ChildProcess.init(argv, allocator);
+        var child = std.process.Child.init(argv, allocator);
         child.executable_path = path;
         try child.spawn();
         return @intCast(child.id);
