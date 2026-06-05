@@ -149,11 +149,9 @@ export fn hajr_ring_init(
         }
     } else if (comptime builtin.os.tag == .macos) {
         var fds: [2]i32 = undefined;
-        // Use system.pipe directly as posix.pipe might be missing in this version
         const rc = std.posix.system.pipe(&fds);
         if (rc == 0) {
             s_fd = fds[0];
-            // We'll leak the write end for now or manage it elsewhere
         }
     }
 
@@ -304,7 +302,7 @@ export fn hajr_ring_signal(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
             return 1;
         } else if (comptime builtin.os.tag == .macos) {
             const val: u8 = 1;
-            const rc = std.posix.system.write(ring.signal_fd, &val, 1);
+            const rc = std.posix.system.write(ring.signal_fd, @ptrCast(&val), 1);
             return if (rc >= 0) 1 else -1;
         }
     }
@@ -323,7 +321,7 @@ export fn hajr_ring_wait(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
             return 1;
         } else if (comptime builtin.os.tag == .macos) {
             var val: u8 = 0;
-            const rc = std.posix.system.read(ring.signal_fd, &val, 1);
+            const rc = std.posix.system.read(ring.signal_fd, @ptrCast(&val), 1);
             return if (rc >= 0) 1 else -1;
         }
     }
@@ -473,9 +471,10 @@ export fn __hajr_create_anonymous_ring(size: usize) callconv(.c) u64 {
         return @as(u64, @intCast(fd));
     } else if (comptime builtin.os.tag == .macos) {
         const name = "/hajr-ring-m2-shm"; 
-        const fd = std.posix.system.open(name, 0o100 | 0o002 | 0o200, 0o600); // O_CREAT | O_RDWR | O_EXCL
+        const oflag = std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true };
+        const fd = std.posix.system.open(name, oflag, 0o600);
         if (fd < 0) {
-            return @intCast(std.posix.system.open(name, 0o002, 0)); // O_RDWR
+            return @intCast(std.posix.system.open(name, std.posix.O{ .ACCMODE = .RDWR }, 0));
         }
         _ = std.posix.system.ftruncate(fd, @as(i64, @intCast(size)));
         return @as(u64, @intCast(fd));

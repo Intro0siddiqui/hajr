@@ -68,9 +68,10 @@ pub fn spawnCompartment(
         }
     } else {
         // Fallback for other OSs (like macOS)
-        var child = std.process.Child.init(argv, allocator);
-        child.executable_path = path;
-        try child.spawn();
+        const child = try std.process.spawn(allocator, .{
+            .argv = argv,
+            // .cwd = ...
+        });
         return @intCast(child.id);
     }
 }
