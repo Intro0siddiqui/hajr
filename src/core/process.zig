@@ -67,7 +67,7 @@ pub fn spawnCompartment(
             return @intCast(pid);
         }
     } else {
-        // Fallback for other OSs (like macOS)
+        // Fallback for other OSs (like macOS and Windows)
         var threaded_io = std.Io.Threaded.init(allocator, .{});
         defer threaded_io.deinit();
         const io = threaded_io.io();
@@ -75,6 +75,13 @@ pub fn spawnCompartment(
         const child = try std.process.spawn(io, .{
             .argv = argv,
         });
-        return @intCast(child.id orelse 0);
+        
+        if (comptime builtin.os.tag == .windows) {
+            // On Windows, child.id is a HANDLE
+            return @intCast(std.os.windows.kernel32.GetProcessId(child.id));
+        } else {
+            // On POSIX, child.id is a PID (optional)
+            return @intCast(child.id orelse 0);
+        }
     }
 }

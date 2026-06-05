@@ -206,7 +206,12 @@ export fn hajr_ring_map_with_signal(
 export fn hajr_ring_free(c_ring: ?*C_HardenedRingBuffer) callconv(.c) void {
     if (c_ring) |r| {
         if (r.signal_fd != -1) {
-            _ = std.posix.system.close(r.signal_fd);
+            if (comptime builtin.os.tag != .windows) {
+                _ = std.posix.system.close(r.signal_fd);
+            } else {
+                // Windows handles are pointers
+                _ = std.os.windows.kernel32.CloseHandle(@ptrFromInt(@as(usize, @intCast(r.signal_fd))));
+            }
         }
         std.heap.c_allocator.destroy(r);
     }
