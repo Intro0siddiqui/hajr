@@ -614,3 +614,76 @@ export fn hajr_spawn_compartment(
 
     return @intCast(pid);
 }
+
+// ============================================================================
+// CRC32 Checksum FFI for IPC Message Integrity
+// ============================================================================
+
+/// CRC32 lookup table (Castagnoli polynomial 0x1EDC6F41)
+const crc32_table = blk: {
+    @setEvalBranchQuota(10000);
+    var table: [256]u32 = undefined;
+    const poly: u32 = 0x1EDC6F41; // Castagnoli
+    var i: u32 = 0;
+    while (i < 256) : (i += 1) {
+        var crc = i;
+        var j: u32 = 0;
+        while (j < 8) : (j += 1) {
+            if (crc & 1 != 0) {
+                crc = (crc >> 1) ^ poly;
+            } else {
+                crc >>= 1;
+            }
+        }
+        table[i] = crc;
+    }
+    break :blk table;
+};
+
+/// Calculate CRC32 checksum of data
+pub fn crc32Calculate(data: []const u8) u32 {
+    var crc: u32 = 0xFFFFFFFF;
+    for (data) |byte| {
+        crc = (crc >> 8) ^ crc32_table[(crc ^ byte) & 0xFF];
+    }
+    return crc ^ 0xFFFFFFFF;
+}
+
+/// C FFI: Calculate CRC32 checksum of a buffer
+export fn hajr_crc32(data: [*]const u8, length: usize) callconv(.c) u32 {
+    return crc32Calculate(data[0..length]);
+}
+
+/// C FFI: Calculate CRC32 of IPC message (header + payload)
+export fn hajr_ipc_message_checksum(
+    header: [*]const u8,
+    header_len: usize,
+    payload: [*]const u8,
+    payload_len: usize,
+) callconv(.c) u32 {
+    var crc: u32 = 0xFFFFFFFF;
+    
+    // Hash header
+    for (header[0..header_len]) |byte| {
+        crc = (crc >> 8) ^ crc32_table[(crc ^ byte) & 0xFF];
+    }
+    
+    // Hash payload
+    for (payload[0..payload_len]) |byte| {
+        crc = (crc >> 8) ^ crc32_table[(crc ^ byte) & 0xFF];
+    }
+    
+    return crc ^ 0xFFFFFFFF;
+}
+
+/// C FFI: Verify IPC message checksum
+export fn hajr_ipc_verify_checksum(
+    header: [*]const u8,
+    header_len: usize,
+    payload: [*]const u8,
+    payload_len: usize,
+    expected_checksum: u32,
+) callconv(.c) bool {
+    const actual = hajr_ipc_message_checksum(header, header_len, payload, payload_len);
+    return actual == expected_checksum;
+}
