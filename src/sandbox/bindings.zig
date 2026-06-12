@@ -518,6 +518,19 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
     const mmap_ptr: [*]u8 = mmap_slice.ptr;
     
     const ring_size = buffer_len - sandbox.RingConfig.METADATA_SIZE;
+
+    // When no signal_fd is provided (-1), create an eventfd for IPC signaling.
+    // Without this, Zawra_Hajr_CreateRingPair would return -1 for both
+    // signal FDs, making the child's connection identifier invalid.
+    var actual_signal_fd = signal_fd;
+    if (actual_signal_fd == -1) {
+        if (comptime builtin.os.tag == .linux) {
+            const efd = std.os.linux.syscall2(.eventfd, 0, std.os.linux.EFD.CLOEXEC | std.os.linux.EFD.NONBLOCK);
+            if (@as(isize, @bitCast(efd)) >= 0) {
+                actual_signal_fd = @intCast(efd);
+            }
+        }
+    }
     
     const c_ring = hajr_ring_map_with_signal(
         mmap_ptr,
@@ -525,7 +538,7 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
         ring_size,
         0,
         0,
-        signal_fd,
+        actual_signal_fd,
     );
     
     return @ptrCast(c_ring);

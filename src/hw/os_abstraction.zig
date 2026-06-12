@@ -315,6 +315,17 @@ pub fn exitProcess(code: u8) noreturn {
 // OS-Level Process Lockdown
 // ============================================================================
 
+/// Process types for per-process sandboxing.
+pub const ProcessType = enum(u32) {
+    web = 0,
+    network = 1,
+    gpu = 2,
+
+    pub fn fromInt(value: u32) ProcessType {
+        return @enumFromInt(value);
+    }
+};
+
 /// Errors that can occur during process lockdown.
 pub const LockdownError = error{
     UnsupportedPlatform,
@@ -328,31 +339,91 @@ pub const LockdownError = error{
     TokenOpenFailed,
 };
 
+/// Per-process Landlock path rules for Linux.
+const web_landlock_rules = if (builtin.os.tag == .linux) &[_]@import("landlock.zig").PathRule{
+    // Fonts
+    .{ .path = "/usr/share/fonts", .read = true },
+    .{ .path = "/usr/local/share/fonts", .read = true },
+    .{ .path = "/etc/fonts", .read = true },
+    // DNS resolution
+    .{ .path = "/etc/resolv.conf", .read = true },
+    .{ .path = "/etc/hosts", .read = true },
+    // Profile + caches
+    .{ .path = "/tmp/zawra-profile", .read = true, .write = true },
+    .{ .path = "/tmp", .read = true, .write = true },
+} else undefined;
+
+const network_landlock_rules = if (builtin.os.tag == .linux) &[_]@import("landlock.zig").PathRule{
+    // Profile + caches
+    .{ .path = "/tmp/zawra-profile", .read = true, .write = true },
+    .{ .path = "/tmp", .read = true, .write = true },
+    // DNS resolution
+    .{ .path = "/etc/resolv.conf", .read = true },
+    .{ .path = "/etc/hosts", .read = true },
+    // TLS certificates
+    .{ .path = "/etc/ssl", .read = true },
+    .{ .path = "/etc/ssl/certs", .read = true },
+    .{ .path = "/etc/pki", .read = true },
+} else undefined;
+
+const gpu_landlock_rules = if (builtin.os.tag == .linux) &[_]@import("landlock.zig").PathRule{
+    // GPU device access
+    .{ .path = "/dev/dri", .read = true, .write = true },
+    // Profile
+    .{ .path = "/tmp/zawra-profile", .read = true, .write = true },
+} else undefined;
+
 /// Seal the current process for all future operations.
 ///
 /// After this call:
 /// - Linux: seccomp-BPF whitelist allows only essential syscalls;
-///          Landlock rules deny all filesystem access.
+///          Landlock rules deny unauthorized filesystem access.
 /// - macOS: Seatbelt profile denies all default operations.
 /// - Windows: Mitigation policies disable win32k, enforce strict handles, etc.
 ///
 /// Must be called after all initialization is complete and before
 /// processing any untrusted data.
-pub fn sealProcess() LockdownError!void {
+pub fn sealProcess(process_type: ProcessType, debug: bool) LockdownError!void {
     switch (builtin.os.tag) {
         .linux => {
             const seccomp = @import("seccomp.zig");
             const landlock = @import("landlock.zig");
-            try seccomp.install(.jit_allowed);
-            try landlock.denyAllAccess();
+
+            const filter_kind: seccomp.FilterKind = if (debug) switch (process_type) {
+                .web => .web_process_debug,
+                .network => .network_process_debug,
+                .gpu => .gpu_process_debug,
+            } else switch (process_type) {
+                .web => .web_process,
+                .network => .network_process,
+                .gpu => .gpu_process,
+            };
+            try seccomp.install(filter_kind);
+
+            const rules = switch (process_type) {
+                .web => web_landlock_rules,
+                .network => network_landlock_rules,
+                .gpu => gpu_landlock_rules,
+            };
+            try landlock.denyWithExceptions(rules);
         },
         .macos => {
             const seatbelt = @import("seatbelt.zig");
-            try seatbelt.apply(.no_write);
+            const profile: seatbelt.Profile = switch (process_type) {
+                .web => .web_process,
+                .network => .network_process,
+                .gpu => .gpu_process,
+            };
+            try seatbelt.apply(profile);
         },
         .windows => {
             const mitigations = @import("windows/mitigations.zig");
-            try mitigations.apply(.{});
+            const profile: mitigations.ProcessMitigationProfile = switch (process_type) {
+                .web => .web_process,
+                .network => .network_process,
+                .gpu => .gpu_process,
+            };
+            try mitigations.apply(profile.flags());
             try mitigations.applyLowIntegrity();
         },
         else => return error.UnsupportedPlatform,

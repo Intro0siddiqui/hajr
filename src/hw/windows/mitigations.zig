@@ -71,6 +71,59 @@ pub const MitigationFlags = struct {
     no_low_label_images: bool = true,
 };
 
+/// Per-process mitigation profiles for Windows.
+///
+/// Windows doesn't have seccomp/Landlock equivalents for syscall/filesystem
+/// filtering. Mitigation policies harden the process against exploitation.
+pub const ProcessMitigationProfile = enum {
+    web_process,
+    network_process,
+    gpu_process,
+
+    pub fn flags(self: ProcessMitigationProfile) MitigationFlags {
+        return switch (self) {
+            // WebProcess (renderer): maximum hardening
+            // no_win32k prevents Win32k font exploits (CVE-2021-34484, etc.)
+            .web_process => .{
+                .dep = true,
+                .aslr = true,
+                .high_entropy_aslr = true,
+                .strict_handles = true,
+                .no_win32k = true,
+                .no_extension_points = true,
+                .block_non_microsoft = false,
+                .no_remote_images = true,
+                .no_low_label_images = true,
+            },
+            // NetworkProcess: same hardening, no GUI needed
+            .network_process => .{
+                .dep = true,
+                .aslr = true,
+                .high_entropy_aslr = true,
+                .strict_handles = true,
+                .no_win32k = true,
+                .no_extension_points = true,
+                .block_non_microsoft = false,
+                .no_remote_images = true,
+                .no_low_label_images = true,
+            },
+            // GPUProcess: needs Win32k for GPU rendering/DirectX
+            // Relax no_win32k to allow GPU compositing
+            .gpu_process => .{
+                .dep = true,
+                .aslr = true,
+                .high_entropy_aslr = true,
+                .strict_handles = true,
+                .no_win32k = false, // GPU process needs Win32k
+                .no_extension_points = true,
+                .block_non_microsoft = false,
+                .no_remote_images = true,
+                .no_low_label_images = true,
+            },
+        };
+    }
+};
+
 fn applyPolicy(policy_type: ProcessMitigationPolicy, buffer: *const anyopaque, size: windows.SIZE_T) !void {
     const ok = SetProcessMitigationPolicy(policy_type, buffer, size);
     if (ok == .FALSE) return error.MitigationPolicyFailed;
