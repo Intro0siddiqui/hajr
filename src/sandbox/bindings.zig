@@ -495,7 +495,15 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
     var buffer_len: usize = 0;
     if (comptime builtin.os.tag == .linux) {
         const rc = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 2); // SEEK_END
-        if (std.os.linux.errno(rc) != .SUCCESS) return null;
+        const lseek_err = std.os.linux.errno(rc);
+        {
+            var diag_buf: [128]u8 = undefined;
+            const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-CHILD] DIAG: lseek fd={d} rc={d} errno={s}\n", .{ fd, @as(isize, @bitCast(rc)), @tagName(lseek_err) });
+            if (diag_msg) |str| {
+                _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+            } else |_| {}
+        }
+        if (lseek_err != .SUCCESS) return null;
         buffer_len = @intCast(rc);
         _ = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 0); // SEEK_SET
     } else {
@@ -513,7 +521,14 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
         std.posix.MAP{ .TYPE = .SHARED },
         fd,
         0,
-    ) catch return null;
+    ) catch |err| {
+        var diag_buf: [128]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-CHILD] DIAG: mmap failed fd={d} len={d} err={s}\n", .{ fd, buffer_len, @errorName(err) });
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+        return null;
+    };
     const mmap_ptr: [*]u8 = mmap_slice.ptr;
     
     const ring_size = buffer_len - sandbox.RingConfig.METADATA_SIZE;
