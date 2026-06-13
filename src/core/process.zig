@@ -43,18 +43,101 @@ pub fn spawnCompartment(
         if (pid == 0) {
             // Child process - ONLY ASYNC-SIGNAL-SAFE CODE HERE
             
-            // 1. Unshare namespaces for isolation.
-            // NOTE: CLONE_NEWUSER is intentionally omitted. Without writing
-            // to /proc/self/uid_map, the child's UID becomes `nobody` (65534),
-            // which causes bmalloc's scavenger thread creation to fail with
-            // EPERM, triggering a SIGILL assertion in pas_scavenger.c. The full
-            // Hajr sandbox (hajr_seal_process) will re-enable user namespace
-            // isolation with proper UID mapping when allowlist is expanded.
-            const flags: u32 = std.os.linux.CLONE.NEWNS | std.os.linux.CLONE.NEWPID;
-            const res_unshare = std.os.linux.syscall1(.unshare, flags);
-            if (std.os.linux.errno(res_unshare) != .SUCCESS) {
+            // 1. Create user namespace (always succeeds for unprivileged users)
+            const user_ns_flags: u32 = std.os.linux.CLONE.NEWUSER;
+            const res_userns = std.os.linux.syscall1(.unshare, user_ns_flags);
+            if (std.os.linux.errno(res_userns) != .SUCCESS) {
+                const err_msg = "[HAJR-CHILD] WARNING: CLONE_NEWUSER failed, trying fallback without user namespace...\n";
+                _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                // Fallback: try without user namespace (requires root)
+                const fallback_flags: u32 = std.os.linux.CLONE.NEWNS | std.os.linux.CLONE.NEWPID;
+                const res_fallback = std.os.linux.syscall1(.unshare, fallback_flags);
+                if (std.os.linux.errno(res_fallback) != .SUCCESS) {
+                    const err_msg2 = "[HAJR-CHILD] FATAL: unshare failed (need root or user namespaces)\n";
+                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg2.ptr), err_msg2.len);
+                    hw.os.exitProcess(1);
+                }
+            } else {
+                // Write /proc/self/setgroups "deny" (required before gid_map)
+                const fd_sg = std.os.linux.syscall3(.openat, @intFromPtr("/proc/self/setgroups"), 1, 0); // O_WRONLY
+                if (@as(isize, @bitCast(fd_sg)) >= 0) {
+                    const deny = "deny\n";
+                    const written = std.os.linux.syscall3(.write, fd_sg, @intFromPtr(deny.ptr), deny.len);
+                    if (@as(isize, @bitCast(written)) != deny.len) {
+                        const err_msg = "[HAJR-CHILD] WARNING: failed to write setgroups, continuing...\n";
+                        _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                    }
+                    _ = std.os.linux.syscall1(.close, fd_sg);
+                } else {
+                    // ENOENT is OK for kernels < 3.19, other errors are non-fatal
+                    // (setgroups denial is best-effort; gid_map write will catch failures)
+                    const err_no = std.os.linux.errno(fd_sg);
+                    if (err_no != .NOENT) {
+                        const err_msg = "[HAJR-CHILD] WARNING: failed to open setgroups, continuing...\n";
+                        _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                    }
+                }
+
+                // Map namespace root -> host UID (so child appears as host user, not nobody)
+                const real_uid = std.os.linux.syscall0(.getuid);
+                const fd_uid = std.os.linux.syscall3(.openat, @intFromPtr("/proc/self/uid_map"), 1, 0); // O_WRONLY
+                if (@as(isize, @bitCast(fd_uid)) < 0) {
+                    const err_msg = "[HAJR-CHILD] FATAL: failed to open uid_map\n";
+                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                    hw.os.exitProcess(1);
+                }
+                var uid_buf: [32]u8 = undefined;
+                const uid_str = std.fmt.bufPrint(&uid_buf, "0 {d} 1\n", .{real_uid}) catch unreachable;
+                const uid_written = std.os.linux.syscall3(.write, fd_uid, @intFromPtr(uid_str.ptr), uid_str.len);
+                _ = std.os.linux.syscall1(.close, fd_uid);
+                if (@as(isize, @bitCast(uid_written)) != uid_str.len) {
+                    const err_msg = "[HAJR-CHILD] FATAL: failed to write uid_map\n";
+                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                    hw.os.exitProcess(1);
+                }
+
+                // Map namespace root -> host GID
+                const real_gid = std.os.linux.syscall0(.getgid);
+                const fd_gid = std.os.linux.syscall3(.openat, @intFromPtr("/proc/self/gid_map"), 1, 0); // O_WRONLY
+                if (@as(isize, @bitCast(fd_gid)) < 0) {
+                    const err_msg = "[HAJR-CHILD] FATAL: failed to open gid_map\n";
+                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                    hw.os.exitProcess(1);
+                }
+                var gid_buf: [32]u8 = undefined;
+                const gid_str = std.fmt.bufPrint(&gid_buf, "0 {d} 1\n", .{real_gid}) catch unreachable;
+                const gid_written = std.os.linux.syscall3(.write, fd_gid, @intFromPtr(gid_str.ptr), gid_str.len);
+                _ = std.os.linux.syscall1(.close, fd_gid);
+                if (@as(isize, @bitCast(gid_written)) != gid_str.len) {
+                    const err_msg = "[HAJR-CHILD] FATAL: failed to write gid_map\n";
+                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                    hw.os.exitProcess(1);
+                }
+
+                // Now create mount and PID namespaces (succeeds because we have CAP_SYS_ADMIN in user ns)
+                const ns_flags: u32 = std.os.linux.CLONE.NEWNS | std.os.linux.CLONE.NEWPID;
+                const res_ns = std.os.linux.syscall1(.unshare, ns_flags);
+                if (std.os.linux.errno(res_ns) != .SUCCESS) {
+                    const err_msg = "[HAJR-CHILD] FATAL: unshare(NEWNS|NEWPID) failed\n";
+                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                    hw.os.exitProcess(1);
+                }
+            }
+
+            // Fork again so the grandchild becomes PID 1 in the new PID namespace.
+            // CLONE_NEWPID only takes effect on the next fork/clone, not execve.
+            const res_fork2 = std.os.linux.syscall0(.fork);
+            if (std.os.linux.errno(res_fork2) != .SUCCESS) {
+                const err_msg = "[HAJR-CHILD] FATAL: second fork for PID namespace failed\n";
+                _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
                 hw.os.exitProcess(1);
             }
+            if (res_fork2 != 0) {
+                // Intermediate child: wait for grandchild and exit
+                _ = std.os.linux.syscall4(.wait4, res_fork2, 0, 0, 0);
+                hw.os.exitProcess(0);
+            }
+            // Grandchild continues here as PID 1 in new PID namespace
 
             // 2. Preserve the socket FD (signal1_fd)
             if (out_socket.* != -1) {

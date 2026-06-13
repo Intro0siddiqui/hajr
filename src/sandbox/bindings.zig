@@ -493,11 +493,10 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
 
     const fd: i32 = @intCast(id);
     var buffer_len: usize = 0;
-    
     if (comptime builtin.os.tag == .linux) {
-        const size_or_err = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 2); // SEEK_END
-        if (size_or_err < 0) return null;
-        buffer_len = @intCast(size_or_err);
+        const rc = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 2); // SEEK_END
+        if (std.os.linux.errno(rc) != .SUCCESS) return null;
+        buffer_len = @intCast(rc);
         _ = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 0); // SEEK_SET
     } else {
         const size = std.posix.system.lseek(fd, 0, 2); // SEEK_END
