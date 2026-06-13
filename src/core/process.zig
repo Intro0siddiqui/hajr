@@ -43,6 +43,10 @@ pub fn spawnCompartment(
         if (pid == 0) {
             // Child process - ONLY ASYNC-SIGNAL-SAFE CODE HERE
             
+            // Capture UID/GID BEFORE entering user namespace (inside new ns, getuid returns 65534)
+            const parent_uid = std.os.linux.syscall0(.getuid);
+            const parent_gid = std.os.linux.syscall0(.getgid);
+
             // 1. Create user namespace (always succeeds for unprivileged users)
             const user_ns_flags: u32 = std.os.linux.CLONE.NEWUSER;
             const res_userns = std.os.linux.syscall1(.unshare, user_ns_flags);
@@ -89,11 +93,11 @@ pub fn spawnCompartment(
                 }
 
                 // Log UID info for debugging
-                const real_uid = std.os.linux.syscall0(.getuid);
-                const real_euid = std.os.linux.syscall0(.geteuid);
+                const ns_uid = std.os.linux.syscall0(.getuid);
+                const ns_euid = std.os.linux.syscall0(.geteuid);
                 {
-                    var buf: [96]u8 = undefined;
-                    const msg = std.fmt.bufPrint(&buf, "[HAJR-CHILD] DIAG: uid={d} euid={d}\n", .{ real_uid, real_euid }) catch "uid info\n";
+                    var buf: [128]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "[HAJR-CHILD] DIAG: parent_uid={d} ns_uid={d} ns_euid={d}\n", .{ parent_uid, ns_uid, ns_euid }) catch "uid info\n";
                     _ = std.os.linux.syscall3(.write, 2, @intFromPtr(msg.ptr), msg.len);
                 }
 
@@ -106,7 +110,7 @@ pub fn spawnCompartment(
                     _ = std.os.linux.syscall3(.write, 2, @intFromPtr(msg.ptr), msg.len);
                 } else {
                     var uid_buf: [32]u8 = undefined;
-                    const uid_str = std.fmt.bufPrint(&uid_buf, "0 {d} 1\n", .{real_uid}) catch unreachable;
+                    const uid_str = std.fmt.bufPrint(&uid_buf, "0 {d} 1\n", .{parent_uid}) catch unreachable;
                     const uid_written = std.os.linux.syscall3(.write, fd_uid, @intFromPtr(uid_str.ptr), uid_str.len);
                     _ = std.os.linux.syscall1(.close, fd_uid);
                     if (@as(isize, @bitCast(uid_written)) != uid_str.len) {
@@ -121,11 +125,11 @@ pub fn spawnCompartment(
                 }
 
                 // Map namespace root -> host GID
-                const real_gid = std.os.linux.syscall0(.getgid);
-                const real_egid = std.os.linux.syscall0(.getegid);
+                const ns_gid = std.os.linux.syscall0(.getgid);
+                const ns_egid = std.os.linux.syscall0(.getegid);
                 {
-                    var buf: [96]u8 = undefined;
-                    const msg = std.fmt.bufPrint(&buf, "[HAJR-CHILD] DIAG: gid={d} egid={d}\n", .{ real_gid, real_egid }) catch "gid info\n";
+                    var buf: [128]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "[HAJR-CHILD] DIAG: parent_gid={d} ns_gid={d} ns_egid={d}\n", .{ parent_gid, ns_gid, ns_egid }) catch "gid info\n";
                     _ = std.os.linux.syscall3(.write, 2, @intFromPtr(msg.ptr), msg.len);
                 }
                 const fd_gid = std.os.linux.syscall4(.openat, @as(usize, @bitCast(@as(isize, -100))), @intFromPtr("/proc/self/gid_map"), @as(usize, 1), 0); // AT_FDCWD, O_WRONLY
@@ -136,7 +140,7 @@ pub fn spawnCompartment(
                     _ = std.os.linux.syscall3(.write, 2, @intFromPtr(msg.ptr), msg.len);
                 } else {
                     var gid_buf: [32]u8 = undefined;
-                    const gid_str = std.fmt.bufPrint(&gid_buf, "0 {d} 1\n", .{real_gid}) catch unreachable;
+                    const gid_str = std.fmt.bufPrint(&gid_buf, "0 {d} 1\n", .{parent_gid}) catch unreachable;
                     const gid_written = std.os.linux.syscall3(.write, fd_gid, @intFromPtr(gid_str.ptr), gid_str.len);
                     _ = std.os.linux.syscall1(.close, fd_gid);
                     if (@as(isize, @bitCast(gid_written)) != gid_str.len) {
