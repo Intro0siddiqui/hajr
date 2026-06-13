@@ -196,8 +196,8 @@ pub fn spawnCompartment(
             const hajr_fd_prefixes = [_]struct{ prefix: []const u8, plen: usize }{
                 .{ .prefix = "ZAWRA_HAJR_SIGNAL1=", .plen = 19 },
                 .{ .prefix = "ZAWRA_HAJR_SIGNAL2=", .plen = 19 },
-                .{ .prefix = "ZAWRA_HAJR_RING1=", .plen = 16 },
-                .{ .prefix = "ZAWRA_HAJR_RING2=", .plen = 16 },
+                .{ .prefix = "ZAWRA_HAJR_RING1=", .plen = 17 },
+                .{ .prefix = "ZAWRA_HAJR_RING2=", .plen = 17 },
                 .{ .prefix = "ZAWRA_HAJR_PARENT_PIDFD=", .plen = 24 },
             };
             var i_env: usize = 0;
