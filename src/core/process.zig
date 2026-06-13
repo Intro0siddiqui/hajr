@@ -193,19 +193,19 @@ pub fn spawnCompartment(
             //    Ring buffer memfd FDs are created with MFD_CLOEXEC; without removing it,
             //    execve closes them and the child cannot mmap the shared rings.
             //    The parent pidfd also needs CLOEXEC cleared for hajr_ipc_set_other_pidfd.
-            const hajr_fd_prefixes = [_]struct{ prefix: []const u8, plen: usize }{
-                .{ .prefix = "ZAWRA_HAJR_SIGNAL1=", .plen = 19 },
-                .{ .prefix = "ZAWRA_HAJR_SIGNAL2=", .plen = 19 },
-                .{ .prefix = "ZAWRA_HAJR_RING1=", .plen = 17 },
-                .{ .prefix = "ZAWRA_HAJR_RING2=", .plen = 17 },
-                .{ .prefix = "ZAWRA_HAJR_PARENT_PIDFD=", .plen = 24 },
+            const hajr_fd_prefixes = [_][]const u8{
+                "ZAWRA_HAJR_SIGNAL1=",
+                "ZAWRA_HAJR_SIGNAL2=",
+                "ZAWRA_HAJR_RING1=",
+                "ZAWRA_HAJR_RING2=",
+                "ZAWRA_HAJR_PARENT_PIDFD=",
             };
             var i_env: usize = 0;
             while (envp[i_env]) |env_ptr| : (i_env += 1) {
                 const entry = std.mem.span(env_ptr);
-                for (hajr_fd_prefixes) |p| {
-                    if (entry.len > p.plen and std.mem.eql(u8, entry[0..p.plen], p.prefix)) {
-                        const fd_val = std.fmt.parseInt(i32, entry[p.plen..], 10) catch break;
+                for (hajr_fd_prefixes) |prefix| {
+                    if (std.mem.startsWith(u8, entry, prefix)) {
+                        const fd_val = std.fmt.parseInt(i32, entry[prefix.len..], 10) catch break;
                         if (fd_val != -1) {
                             const res_fcntl2 = std.os.linux.syscall3(.fcntl, @as(usize, @intCast(fd_val)), 1, 0); // F_GETFD
                             if (std.os.linux.errno(res_fcntl2) == .SUCCESS) {
