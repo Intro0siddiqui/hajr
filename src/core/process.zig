@@ -80,39 +80,73 @@ pub fn spawnCompartment(
 
                 // Restore dumpable state so /proc/self/ files are owned by us, not root.
                 // Non-dumpable processes have their /proc/self/ files root-owned, causing EPERM on uid_map writes.
-                _ = std.os.linux.syscall2(.prctl, 4, 1); // PR_SET_DUMPABLE = 4, 1 = true
+                const res_prctl = std.os.linux.syscall2(.prctl, 4, 1); // PR_SET_DUMPABLE = 4, 1 = true
+                const prctl_err = std.os.linux.errno(res_prctl);
+                if (prctl_err != .SUCCESS) {
+                    var buf: [64]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "[HAJR-CHILD] DIAG: prctl(PR_SET_DUMPABLE) failed, errno={d}\n", .{@intFromEnum(prctl_err)}) catch "prctl failed\n";
+                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(msg.ptr), msg.len);
+                }
+
+                // Log UID info for debugging
+                const real_uid = std.os.linux.syscall0(.getuid);
+                const real_euid = std.os.linux.syscall0(.geteuid);
+                {
+                    var buf: [96]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "[HAJR-CHILD] DIAG: uid={d} euid={d}\n", .{ real_uid, real_euid }) catch "uid info\n";
+                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(msg.ptr), msg.len);
+                }
 
                 // Map namespace root -> host UID (so child appears as host user, not nobody)
-                const real_uid = std.os.linux.syscall0(.getuid);
                 const fd_uid = std.os.linux.syscall4(.openat, @as(usize, @bitCast(@as(isize, -100))), @intFromPtr("/proc/self/uid_map"), @as(usize, 1), 0); // AT_FDCWD, O_WRONLY
                 if (@as(isize, @bitCast(fd_uid)) < 0) {
-                    const err_msg = "[HAJR-CHILD] WARNING: failed to open uid_map, continuing without uid mapping...\n";
-                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                    const err_no = std.os.linux.errno(fd_uid);
+                    var buf: [96]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "[HAJR-CHILD] WARNING: failed to open uid_map, errno={d}, continuing...\n", .{@intFromEnum(err_no)}) catch "uid_map open failed\n";
+                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(msg.ptr), msg.len);
                 } else {
                     var uid_buf: [32]u8 = undefined;
                     const uid_str = std.fmt.bufPrint(&uid_buf, "0 {d} 1\n", .{real_uid}) catch unreachable;
                     const uid_written = std.os.linux.syscall3(.write, fd_uid, @intFromPtr(uid_str.ptr), uid_str.len);
                     _ = std.os.linux.syscall1(.close, fd_uid);
                     if (@as(isize, @bitCast(uid_written)) != uid_str.len) {
-                        const err_msg = "[HAJR-CHILD] WARNING: failed to write uid_map, continuing without uid mapping...\n";
-                        _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                        const err_no = std.os.linux.errno(uid_written);
+                        var buf: [96]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&buf, "[HAJR-CHILD] WARNING: failed to write uid_map, errno={d}, continuing...\n", .{@intFromEnum(err_no)}) catch "uid_map write failed\n";
+                        _ = std.os.linux.syscall3(.write, 2, @intFromPtr(msg.ptr), msg.len);
+                    } else {
+                        const ok_msg = "[HAJR-CHILD] DIAG: uid_map write succeeded\n";
+                        _ = std.os.linux.syscall3(.write, 2, @intFromPtr(ok_msg.ptr), ok_msg.len);
                     }
                 }
 
                 // Map namespace root -> host GID
                 const real_gid = std.os.linux.syscall0(.getgid);
+                const real_egid = std.os.linux.syscall0(.getegid);
+                {
+                    var buf: [96]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "[HAJR-CHILD] DIAG: gid={d} egid={d}\n", .{ real_gid, real_egid }) catch "gid info\n";
+                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(msg.ptr), msg.len);
+                }
                 const fd_gid = std.os.linux.syscall4(.openat, @as(usize, @bitCast(@as(isize, -100))), @intFromPtr("/proc/self/gid_map"), @as(usize, 1), 0); // AT_FDCWD, O_WRONLY
                 if (@as(isize, @bitCast(fd_gid)) < 0) {
-                    const err_msg = "[HAJR-CHILD] WARNING: failed to open gid_map, continuing without gid mapping...\n";
-                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                    const err_no = std.os.linux.errno(fd_gid);
+                    var buf: [96]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "[HAJR-CHILD] WARNING: failed to open gid_map, errno={d}, continuing...\n", .{@intFromEnum(err_no)}) catch "gid_map open failed\n";
+                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(msg.ptr), msg.len);
                 } else {
                     var gid_buf: [32]u8 = undefined;
                     const gid_str = std.fmt.bufPrint(&gid_buf, "0 {d} 1\n", .{real_gid}) catch unreachable;
                     const gid_written = std.os.linux.syscall3(.write, fd_gid, @intFromPtr(gid_str.ptr), gid_str.len);
                     _ = std.os.linux.syscall1(.close, fd_gid);
                     if (@as(isize, @bitCast(gid_written)) != gid_str.len) {
-                        const err_msg = "[HAJR-CHILD] WARNING: failed to write gid_map, continuing without gid mapping...\n";
-                        _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                        const err_no = std.os.linux.errno(gid_written);
+                        var buf: [96]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&buf, "[HAJR-CHILD] WARNING: failed to write gid_map, errno={d}, continuing...\n", .{@intFromEnum(err_no)}) catch "gid_map write failed\n";
+                        _ = std.os.linux.syscall3(.write, 2, @intFromPtr(msg.ptr), msg.len);
+                    } else {
+                        const ok_msg2 = "[HAJR-CHILD] DIAG: gid_map write succeeded\n";
+                        _ = std.os.linux.syscall3(.write, 2, @intFromPtr(ok_msg2.ptr), ok_msg2.len);
                     }
                 }
 
