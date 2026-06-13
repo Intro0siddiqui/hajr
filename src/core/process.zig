@@ -59,7 +59,7 @@ pub fn spawnCompartment(
                 }
             } else {
                 // Write /proc/self/setgroups "deny" (required before gid_map)
-                const fd_sg = std.os.linux.syscall3(.openat, @intFromPtr("/proc/self/setgroups"), 1, 0); // O_WRONLY
+                const fd_sg = std.os.linux.syscall4(.openat, @as(usize, @bitCast(@as(isize, -100))), @intFromPtr("/proc/self/setgroups"), @as(usize, 1), 0); // AT_FDCWD, O_WRONLY
                 if (@as(isize, @bitCast(fd_sg)) >= 0) {
                     const deny = "deny\n";
                     const written = std.os.linux.syscall3(.write, fd_sg, @intFromPtr(deny.ptr), deny.len);
@@ -80,7 +80,7 @@ pub fn spawnCompartment(
 
                 // Map namespace root -> host UID (so child appears as host user, not nobody)
                 const real_uid = std.os.linux.syscall0(.getuid);
-                const fd_uid = std.os.linux.syscall3(.openat, @intFromPtr("/proc/self/uid_map"), 1, 0); // O_WRONLY
+                const fd_uid = std.os.linux.syscall4(.openat, @as(usize, @bitCast(@as(isize, -100))), @intFromPtr("/proc/self/uid_map"), @as(usize, 1), 0); // AT_FDCWD, O_WRONLY
                 if (@as(isize, @bitCast(fd_uid)) < 0) {
                     const err_msg = "[HAJR-CHILD] FATAL: failed to open uid_map\n";
                     _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
@@ -98,7 +98,7 @@ pub fn spawnCompartment(
 
                 // Map namespace root -> host GID
                 const real_gid = std.os.linux.syscall0(.getgid);
-                const fd_gid = std.os.linux.syscall3(.openat, @intFromPtr("/proc/self/gid_map"), 1, 0); // O_WRONLY
+                const fd_gid = std.os.linux.syscall4(.openat, @as(usize, @bitCast(@as(isize, -100))), @intFromPtr("/proc/self/gid_map"), @as(usize, 1), 0); // AT_FDCWD, O_WRONLY
                 if (@as(isize, @bitCast(fd_gid)) < 0) {
                     const err_msg = "[HAJR-CHILD] FATAL: failed to open gid_map\n";
                     _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
