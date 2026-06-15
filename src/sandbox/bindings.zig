@@ -92,19 +92,72 @@ export fn __zawra_ring_write(data: [*]const u8, length: usize) callconv(.c) i32 
     const read_idx = meta.read_index.load(.acquire);
 
     const used = write_idx - read_idx;
-    if (used + length > config.outbound_size) return 0; // Full
+
+    // Diagnostic: log before write
+    {
+        var diag_buf: [256]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-DIAG] ring_write: len={d} write_idx={d} read_idx={d} used={d} size={d}\n", .{ length, write_idx, read_idx, used, config.outbound_size });
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+    }
+
+    if (used + length > config.outbound_size) {
+        // Diagnostic: log full condition
+        var diag_buf: [256]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-DIAG] ring_write: FULL! used={d} len={d} size={d}\n", .{ used, length, config.outbound_size });
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+        return 0; // Full
+    }
 
     const write_pos = write_idx & (config.outbound_size - 1);
     const first_chunk = @min(length, config.outbound_size - write_pos);
+    const second_chunk = if (first_chunk < length) length - first_chunk else 0;
+
+    // Diagnostic: log chunk sizes
+    {
+        var diag_buf: [256]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-DIAG] ring_write: write_pos={d} first={d} second={d}\n", .{ write_pos, first_chunk, second_chunk });
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+    }
+
+    // Diagnostic: check for potential overflow
+    if (write_pos + first_chunk > config.outbound_size) {
+        var diag_buf: [256]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-DIAG] ring_write: OVERFLOW! write_pos={d} first={d} size={d}\n", .{ write_pos, first_chunk, config.outbound_size });
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+    }
+    if (second_chunk > config.outbound_size) {
+        var diag_buf: [256]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-DIAG] ring_write: OVERFLOW2! second={d} size={d}\n", .{ second_chunk, config.outbound_size });
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+    }
 
     @memcpy(config.outbound_base[write_pos..write_pos + first_chunk], data[0..first_chunk]);
 
     if (first_chunk < length) {
-        const second_chunk = length - first_chunk;
         @memcpy(config.outbound_base[0..second_chunk], data[first_chunk..length]);
     }
 
     meta.write_index.store(write_idx + length, .release);
+
+    // Diagnostic: log after write
+    {
+        const new_write_idx = meta.write_index.load(.acquire);
+        var diag_buf: [256]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-DIAG] ring_write: DONE new_write_idx={d}\n", .{new_write_idx});
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+    }
 
     return 1; // Success
 }
