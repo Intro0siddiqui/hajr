@@ -283,18 +283,73 @@ export fn hajr_ring_write(
     const used = write_idx -% read_idx;
     const avail = ring.size - used;
 
-    if (length > avail) return 0; // Full
+    // Diagnostic: log before write
+    {
+        var diag_buf: [256]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-DIAG] hajr_ring_write: len={d} write_idx={d} read_idx={d} used={d} avail={d} size={d}\n", .{ length, write_idx, read_idx, used, avail, ring.size });
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+    }
+
+    if (length > avail) {
+        // Diagnostic: log full condition
+        var diag_buf: [256]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-DIAG] hajr_ring_write: FULL! len={d} avail={d} size={d}\n", .{ length, avail, ring.size });
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+        return 0; // Full
+    }
 
     const write_pos = write_idx & (ring.size - 1);
     const first_len = @min(length, ring.size - write_pos);
+    const second_len = if (first_len < length) length - first_len else 0;
+
+    // Diagnostic: log chunk sizes
+    {
+        var diag_buf: [256]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-DIAG] hajr_ring_write: write_pos={d} first={d} second={d}\n", .{ write_pos, first_len, second_len });
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+    }
+
+    // Diagnostic: check for potential overflow
+    if (write_pos + first_len > ring.size) {
+        var diag_buf: [256]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-DIAG] hajr_ring_write: OVERFLOW! write_pos={d} first={d} size={d}\n", .{ write_pos, first_len, ring.size });
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+    }
+    if (second_len > ring.size) {
+        var diag_buf: [256]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-DIAG] hajr_ring_write: OVERFLOW2! second={d} size={d}\n", .{ second_len, ring.size });
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+    }
+
     @memcpy(ring.data_ptr[write_pos..write_pos + first_len], data[0..first_len]);
 
     if (first_len < length) {
-        @memcpy(ring.data_ptr[0..length - first_len], data[first_len..length]);
+        @memcpy(ring.data_ptr[0..second_len], data[first_len..length]);
     }
 
     meta.write_index.store(write_idx +% length, .release);
     _ = meta.sequence.fetchAdd(1, .acq_rel);
+
+    // Diagnostic: log after write
+    {
+        const new_write_idx = meta.write_index.load(.acquire);
+        var diag_buf: [256]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-DIAG] hajr_ring_write: DONE new_write_idx={d}\n", .{new_write_idx});
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+    }
+
     return 1;
 }
 
