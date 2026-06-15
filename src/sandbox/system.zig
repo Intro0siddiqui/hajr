@@ -9,6 +9,7 @@ const memory = @import("memory.zig");
 const jsc_bindings = @import("bindings.zig");
 const router = @import("router.zig");
 const poison = @import("poison.zig");
+const sandbox_core = @import("../core/sandbox.zig");
 
 // ============================================================================
 // Phase 2 Completion Verification
@@ -135,10 +136,10 @@ pub const SandboxInstance = struct {
         
         const ffi_config = jsc_bindings.FFIConfig{
             .inbound_base = @ptrCast(inbound_bounds.pointer.toTagged()),
-            .inbound_size = inbound_bounds.size,
+            .inbound_size = inbound_bounds.size - sandbox_core.RingConfig.METADATA_SIZE, // data-only, power-of-two
             .inbound_meta = @ptrCast(@alignCast(@volatileCast(inbound_meta))),
             .outbound_base = @ptrCast(outbound_bounds.pointer.toTagged()),
-            .outbound_size = outbound_bounds.size,
+            .outbound_size = outbound_bounds.size - sandbox_core.RingConfig.METADATA_SIZE, // data-only, power-of-two
             .outbound_meta = @ptrCast(@alignCast(@volatileCast(outbound_meta))),
         };
 

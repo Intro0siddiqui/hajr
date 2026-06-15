@@ -103,6 +103,9 @@ export fn hajr_ring_init(
     key_value: u32,
     tier_value: u8,
 ) callconv(.c) ?*C_HardenedRingBuffer {
+    // Validate size is power-of-two (required for bitwise AND modulo)
+    if (size == 0 or (size & (size - 1)) != 0) return null;
+
     const allocator = std.heap.c_allocator;
     const c_ring = allocator.create(C_HardenedRingBuffer) catch return null;
     
@@ -158,6 +161,9 @@ export fn hajr_ring_map_with_signal(
     tier_value: u8,
     signal_fd: i32,
 ) callconv(.c) ?*C_HardenedRingBuffer {
+    // Validate size is power-of-two (required for bitwise AND modulo)
+    if (size == 0 or (size & (size - 1)) != 0) return null;
+
     const allocator = std.heap.c_allocator;
     const c_ring = allocator.create(C_HardenedRingBuffer) catch return null;
     const metadata = @as(*RingMetadata, @ptrCast(@alignCast(buffer)));
@@ -491,12 +497,15 @@ export fn Zawra_Hajr_SignalEventLoop() callconv(.c) void {
     // Wakeup signal stub for WPE generic runloop
 }
 
-export fn __hajr_create_anonymous_ring(size: usize) callconv(.c) u64 {
+export fn __hajr_create_anonymous_ring(data_size: usize) callconv(.c) u64 {
     if (comptime builtin.os.tag == .linux) {
         const name_ptr = @intFromPtr("hajr-ring");
         const fd = std.os.linux.syscall2(.memfd_create, name_ptr, std.os.linux.MFD.CLOEXEC);
         if (fd < 0) return std.math.maxInt(u64);
-        _ = std.os.linux.syscall2(.ftruncate, @as(usize, @intCast(fd)), size);
+        // data_size is the ring data portion (must be power-of-two).
+        // Total allocation = METADATA_SIZE + data_size.
+        const total_size = sandbox.RingConfig.METADATA_SIZE + data_size;
+        _ = std.os.linux.syscall2(.ftruncate, @as(usize, @intCast(fd)), total_size);
         return @as(u64, @intCast(fd));
     } else if (comptime builtin.os.tag == .macos) {
         const name = "/hajr-ring-m2-shm"; 
@@ -505,7 +514,8 @@ export fn __hajr_create_anonymous_ring(size: usize) callconv(.c) u64 {
         if (fd < 0) {
             return @intCast(std.posix.system.open(name, std.posix.O{ .ACCMODE = .RDWR }, @as(u32, 0)));
         }
-        _ = std.posix.system.ftruncate(fd, @as(i64, @intCast(size)));
+        const total_size = sandbox.RingConfig.METADATA_SIZE + data_size;
+        _ = std.posix.system.ftruncate(fd, @as(i64, @intCast(total_size)));
         return @as(u64, @intCast(fd));
     }
     return std.math.maxInt(u64);
@@ -559,6 +569,16 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
     const mmap_ptr: [*]u8 = mmap_slice.ptr;
     
     const ring_size = buffer_len - sandbox.RingConfig.METADATA_SIZE;
+
+    // Validate ring_size is power-of-two (required for bitwise AND modulo)
+    if (ring_size == 0 or (ring_size & (ring_size - 1)) != 0) {
+        var diag_buf: [128]u8 = undefined;
+        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-CHILD] FATAL: ring_size={d} is not power-of-two!\n", .{ring_size});
+        if (diag_msg) |str| {
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+        } else |_| {}
+        return null;
+    }
 
     // When no signal_fd is provided (-1), create an eventfd for IPC signaling.
     // Without this, Zawra_Hajr_CreateRingPair would return -1 for both
