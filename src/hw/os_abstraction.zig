@@ -470,10 +470,7 @@ pub const HWCAP_PACG: u32 = 1 << 17; // Hardware generic authentication
 /// Returns 0 on non-Linux platforms.
 pub fn getHwcap() u32 {
     if (comptime builtin.os.tag != .linux) return 0;
-    // getauxval(AT_HWCAP) — syscall 204 on aarch64 Linux
-    // AT_HWCAP = 16
-    const res = std.os.linux.syscall1(.{ .linux_name = "getauxval" }, 16);
-    return @as(u32, @intCast(res));
+    return @intCast(std.os.linux.getauxval(std.os.linux.elf.AT_HWCAP));
 }
 
 /// prctl option values for PAC key management
@@ -494,13 +491,12 @@ pub const PacResetError = error{
 pub fn prctlPacResetKeys(mask: u32) PacResetError!void {
     if (comptime builtin.os.tag != .linux) return error.SystemNotSupported;
     const key_mask: u64 = @as(u64, mask);
-    const prctl_num: usize = @intCast(PR_PAC_RESET_KEYS);
     const arg1: u64 = key_mask | PR_PAC_APIAKEY | PR_PAC_APIBKEY | PR_PAC_APDAKEY | PR_PAC_APDBKEY;
-    const res = std.os.linux.syscall5(.{ .linux_name = "prctl" }, prctl_num, arg1, 0, 0, 0);
+    const res = std.os.linux.prctl(@intCast(PR_PAC_RESET_KEYS), arg1, 0, 0, 0);
     if (std.os.linux.errno(res) != .SUCCESS) {
         const err = std.os.linux.errno(res);
         return switch (err) {
-            .INVAL => error.InvalidArgument,
+            .EINVAL => error.InvalidArgument,
             .NOSYS => error.SystemNotSupported,
             else => error.Unexpected,
         };
