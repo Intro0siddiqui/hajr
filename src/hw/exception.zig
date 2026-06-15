@@ -32,6 +32,7 @@ fn handleFault(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?*
             .address = addr,
             .is_write = fault_type.is_write,
             .is_exec = fault_type.is_exec,
+            .is_pac_fault = fault_type.is_pac_fault,
         };
         cb(fault_info);
     } else {
@@ -43,11 +44,13 @@ fn handleFault(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?*
     }
 }
 
-fn extractFaultType(info: *const std.posix.siginfo_t) struct { is_write: bool, is_exec: bool } {
+fn extractFaultType(info: *const std.posix.siginfo_t) struct { is_write: bool, is_exec: bool, is_pac_fault: bool } {
     if (comptime builtin.os.tag == .linux) {
-        return .{ .is_write = info.code == 4, .is_exec = false };
+        // SEGV_ACCADI = 0x06 — PAC authentication data instruction fault
+        const is_pac = info.code == 0x06 or info.code == 6;
+        return .{ .is_write = info.code == 4, .is_exec = false, .is_pac_fault = is_pac };
     } else {
-        return .{ .is_write = true, .is_exec = false };
+        return .{ .is_write = true, .is_exec = false, .is_pac_fault = false };
     }
 }
 

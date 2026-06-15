@@ -48,6 +48,11 @@ pub const HardwareProtection = struct {
         /// ARM Memory Tagging Extension (MTE)
         /// Available on ARMv8.5-A processors
         arm_mte,
+        /// ARM Pointer Authentication (PAC)
+        /// Available on ARMv8.3-A+ processors (Apple Silicon, ARM Linux with HWCAP_PACA)
+        arm_pac,
+        /// Combined ARM PAC + MTE (future ARMv9)
+        arm_pac_mte,
         /// Software-based isolation fallback (for testing)
         software_fallback,
     };
@@ -64,7 +69,19 @@ pub const HardwareProtection = struct {
                 }
                 return .software_fallback;
             },
-            .aarch64 => return if (builtin.os.tag == .linux) .arm_mte else .software_fallback,
+            .aarch64 => {
+                const has_pac = hw.compartment.global_allocator.detectPac();
+                if (builtin.os.tag == .linux) {
+                    // Linux ARM: check for both MTE and PAC
+                    if (has_pac) return .arm_pac; // PAC available, MTE is separate
+                    return .arm_mte;
+                } else if (builtin.os.tag == .macos) {
+                    // Apple Silicon: PAC is always available
+                    if (has_pac) return .arm_pac;
+                    return .software_fallback;
+                }
+                return .software_fallback;
+            },
             else => return .software_fallback,
         }
     }

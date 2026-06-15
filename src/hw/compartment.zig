@@ -11,6 +11,7 @@ pub const CompartmentToken = struct {
 pub const CompartmentAllocator = struct {
     used_mask: u16 = 0,
     mpk_supported: ?bool = null,
+    pac_supported: ?bool = null,
 
     pub fn init() CompartmentAllocator {
         return .{};
@@ -28,6 +29,25 @@ pub const CompartmentAllocator = struct {
             return true;
         }
         self.mpk_supported = false;
+        return false;
+    }
+
+    pub fn detectPac(self: *CompartmentAllocator) bool {
+        if (self.pac_supported) |supported| return supported;
+        if (comptime builtin.cpu.arch == .aarch64) {
+            if (builtin.os.tag == .macos) {
+                self.pac_supported = true;
+                return true;
+            }
+            if (builtin.os.tag == .linux) {
+                const os = @import("os_abstraction.zig");
+                const hwcap = os.getHwcap();
+                const supported = (hwcap & 0x10000) != 0; // HWCAP_PACA
+                self.pac_supported = supported;
+                return supported;
+            }
+        }
+        self.pac_supported = false;
         return false;
     }
 

@@ -1,4 +1,4 @@
-//! Hardware primitives for memory protection (MPK, MTE)
+//! Hardware primitives for memory protection (MPK, MTE, PAC)
 //!
 //! This module provides a unified interface for hardware-assisted memory protection
 //! across different architectures, including Intel MPK (x86_64) and ARM MTE (AArch64).
@@ -9,6 +9,9 @@ const builtin = @import("builtin");
 pub const pointer = @import("pointer.zig");
 pub const compartment = @import("compartment.zig");
 pub const exception = @import("exception.zig");
+pub const pac = if (builtin.cpu.arch == .aarch64) @import("pac.zig") else struct {
+    pub const PacKey = enum { ia, ib, da, db, ga };
+};
 pub const posix_io = if (builtin.os.tag == .windows) @import("os_abstraction.zig") else @import("posix.zig");
 pub const os = @import("os_abstraction.zig");
 pub const windows = @import("windows.zig");

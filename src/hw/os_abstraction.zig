@@ -289,6 +289,7 @@ pub const FaultInfo = extern struct {
     address: usize,
     is_write: bool,
     is_exec: bool,
+    is_pac_fault: bool = false,
 };
 
 pub const FaultHandlerFn = *const fn (info: FaultInfo) callconv(.c) void;
@@ -454,6 +455,55 @@ pub fn futexWake(addr: *volatile u32, count: u32) void {
             FUTEX_WAKE_PRIVATE,
             count,
         );
+    }
+}
+
+// ============================================================================
+// PAC (Pointer Authentication) Linux Helpers
+// ============================================================================
+
+/// HWCAP flags for PAC detection (from Linux kernel headers)
+pub const HWCAP_PACA: u32 = 1 << 16; // Hardware address authentication
+pub const HWCAP_PACG: u32 = 1 << 17; // Hardware generic authentication
+
+/// Read the auxiliary vector (AT_HWCAP) to detect PAC support.
+/// Returns 0 on non-Linux platforms.
+pub fn getHwcap() u32 {
+    if (comptime builtin.os.tag != .linux) return 0;
+    // getauxval(AT_HWCAP) — syscall 204 on aarch64 Linux
+    // AT_HWCAP = 16
+    const res = std.os.linux.syscall1(.{ .linux_name = "getauxval" }, 16);
+    return @as(u32, @intCast(res));
+}
+
+/// prctl option values for PAC key management
+const PR_PAC_RESET_KEYS: u32 = 51;
+const PR_PAC_APIAKEY: u64 = 1;
+const PR_PAC_APIBKEY: u64 = 1 << 1;
+const PR_PAC_APDAKEY: u64 = 1 << 2;
+const PR_PAC_APDBKEY: u64 = 1 << 3;
+
+pub const PacResetError = error{
+    InvalidArgument,
+    SystemNotSupported,
+    Unexpected,
+};
+
+/// Reset all PAC keys to fresh random values (Linux only).
+/// Calls: prctl(PR_PAC_RESET_KEYS, mask, 0, 0, 0)
+pub fn prctlPacResetKeys(mask: u32) PacResetError!void {
+    if (comptime builtin.os.tag != .linux) return error.SystemNotSupported;
+    const key_mask: u64 = @as(u64, mask);
+    const prctl_num: usize = @intCast(PR_PAC_RESET_KEYS);
+    const arg1: u64 = key_mask | PR_PAC_APIAKEY | PR_PAC_APIBKEY | PR_PAC_APDAKEY | PR_PAC_APDBKEY;
+    const res = std.os.linux.syscall5(.{ .linux_name = "prctl" }, prctl_num, arg1, 0, 0, 0);
+    if (std.os.linux.errno(res) != .SUCCESS) {
+        const err = std.os.linux.errno(res);
+        return switch (err) {
+            .INVAL => error.InvalidArgument,
+            .NOSYS => error.SystemNotSupported,
+            else => error.Unexpected,
+        };
     }
 }
 

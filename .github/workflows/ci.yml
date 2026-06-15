@@ -38,3 +38,16 @@ jobs:
 
       - name: Run tests
         run: zig build test --summary all
+
+  cross-aarch64-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build for aarch64-linux
+        run: zig build -Dtarget=aarch64-linux-gnu
