@@ -124,7 +124,6 @@ const AArch64_Linux = struct {
         asm volatile ("paciasp"
             :
             :
-            : "cc"
         );
     }
 
@@ -132,7 +131,6 @@ const AArch64_Linux = struct {
         asm volatile ("autiasp"
             :
             :
-            : "cc"
         );
     }
 
@@ -143,25 +141,21 @@ const AArch64_Linux = struct {
                 \\pacia %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .ib => asm volatile (
                 \\pacib %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .da => asm volatile (
                 \\pacda %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .db => asm volatile (
                 \\pacdb %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .ga => ptr,
         };
@@ -174,25 +168,21 @@ const AArch64_Linux = struct {
                 \\autia %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .ib => asm volatile (
                 \\autib %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .da => asm volatile (
                 \\autda %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .db => asm volatile (
                 \\autdb %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .ga => ptr,
         };
@@ -207,8 +197,6 @@ const AArch64_Linux = struct {
         return asm volatile (
             \\xpaci %[p]
             : [p] "={x0}" (p)
-            :
-            : "cc"
         );
     }
 
@@ -217,8 +205,6 @@ const AArch64_Linux = struct {
         return asm volatile (
             \\xpacd %[p]
             : [p] "={x0}" (p)
-            :
-            : "cc"
         );
     }
 
@@ -245,7 +231,6 @@ const AArch64_Apple = struct {
         asm volatile ("paciasp"
             :
             :
-            : "cc"
         );
     }
 
@@ -253,7 +238,6 @@ const AArch64_Apple = struct {
         asm volatile ("autiasp"
             :
             :
-            : "cc"
         );
     }
 
@@ -264,25 +248,21 @@ const AArch64_Apple = struct {
                 \\pacia %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .ib => asm volatile (
                 \\pacib %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .da => asm volatile (
                 \\pacda %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .db => asm volatile (
                 \\pacdb %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .ga => ptr,
         };
@@ -295,25 +275,21 @@ const AArch64_Apple = struct {
                 \\autia %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .ib => asm volatile (
                 \\autib %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .da => asm volatile (
                 \\autda %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .db => asm volatile (
                 \\autdb %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
-                : "cc"
             ),
             .ga => ptr,
         };
@@ -328,8 +304,6 @@ const AArch64_Apple = struct {
         return asm volatile (
             \\xpaci %[p]
             : [p] "={x0}" (p)
-            :
-            : "cc"
         );
     }
 
@@ -338,8 +312,6 @@ const AArch64_Apple = struct {
         return asm volatile (
             \\xpacd %[p]
             : [p] "={x0}" (p)
-            :
-            : "cc"
         );
     }
 

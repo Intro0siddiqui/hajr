@@ -493,10 +493,6 @@ export fn Zawra_Hajr_MemProtect(ptr: ?*anyopaque, size: usize, read: bool, write
     return 0;
 }
 
-export fn Zawra_Hajr_SignalEventLoop() callconv(.c) void {
-    // Wakeup signal stub for WPE generic runloop
-}
-
 export fn __hajr_create_anonymous_ring(data_size: usize) callconv(.c) u64 {
     if (comptime builtin.os.tag == .linux) {
         const name_ptr = @intFromPtr("hajr-ring");
