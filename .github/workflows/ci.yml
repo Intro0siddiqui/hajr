@@ -17,13 +17,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Clean zig cache
-        run: rm -rf .zig-cache
-
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Clean zig cache
+        if: runner.os != 'Windows'
+        run: rm -rf .zig-cache
+
+      - name: Clean zig cache (Windows)
+        if: runner.os == 'Windows'
+        run: Remove-Item -Recurse -Force .zig-cache -ErrorAction SilentlyContinue
 
       - name: zig build
         run: zig build
