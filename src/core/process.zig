@@ -42,7 +42,11 @@ pub fn spawnCompartment(
         
         if (pid == 0) {
             // Child process - ONLY ASYNC-SIGNAL-SAFE CODE HERE
-            
+
+            // Kill this intermediate child if the UIProcess dies.
+            // PR_SET_PDEATHSIG = 1, SIGKILL = 9
+            _ = std.os.linux.syscall2(.prctl, 1, 9);
+
             // Capture UID/GID BEFORE entering user namespace (inside new ns, getuid returns 65534)
             const parent_uid = std.os.linux.syscall0(.getuid);
             const parent_gid = std.os.linux.syscall0(.getgid);
@@ -178,6 +182,9 @@ pub fn spawnCompartment(
                 hw.os.exitProcess(0);
             }
             // Grandchild continues here as PID 1 in new PID namespace
+
+            // Kill this grandchild if the intermediate child dies.
+            _ = std.os.linux.syscall2(.prctl, 1, 9); // PR_SET_PDEATHSIG=1, SIGKILL=9
 
             // 2. Preserve the socket FD (signal1_fd)
             if (out_socket.* != -1) {
