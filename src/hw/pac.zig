@@ -116,11 +116,11 @@ const AArch64_Linux = struct {
     }
 
     pub fn signLR() void {
-        asm volatile ("paciasp");
+        asm volatile ("paciasp" ::: .{});
     }
 
     pub fn authLR() void {
-        asm volatile ("autiasp");
+        asm volatile ("autiasp" ::: .{});
     }
 
     pub fn sign(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
@@ -129,22 +129,26 @@ const AArch64_Linux = struct {
             .ia => asm volatile (
                 \\pacia %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .ib => asm volatile (
                 \\pacib %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .da => asm volatile (
                 \\pacda %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .db => asm volatile (
                 \\pacdb %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .ga => ptr,
         };
@@ -156,22 +160,26 @@ const AArch64_Linux = struct {
             .ia => asm volatile (
                 \\autia %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .ib => asm volatile (
                 \\autib %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .da => asm volatile (
                 \\autda %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .db => asm volatile (
                 \\autdb %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .ga => ptr,
         };
@@ -185,7 +193,9 @@ const AArch64_Linux = struct {
         var p: usize = ptr;
         return asm volatile (
             \\xpaci %[p]
-            : [p] "={x0}" (p)
+            : [p] "={x0}" (p),
+            : [_] "r" (@as(usize, 0)),
+            : .{}
         );
     }
 
@@ -193,7 +203,9 @@ const AArch64_Linux = struct {
         var p: usize = ptr;
         return asm volatile (
             \\xpacd %[p]
-            : [p] "={x0}" (p)
+            : [p] "={x0}" (p),
+            : [_] "r" (@as(usize, 0)),
+            : .{}
         );
     }
 
@@ -217,11 +229,11 @@ const AArch64_Linux = struct {
 
 const AArch64_Apple = struct {
     pub fn signLR() void {
-        asm volatile ("paciasp");
+        asm volatile ("paciasp" ::: .{});
     }
 
     pub fn authLR() void {
-        asm volatile ("autiasp");
+        asm volatile ("autiasp" ::: .{});
     }
 
     pub fn sign(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
@@ -230,22 +242,26 @@ const AArch64_Apple = struct {
             .ia => asm volatile (
                 \\pacia %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .ib => asm volatile (
                 \\pacib %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .da => asm volatile (
                 \\pacda %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .db => asm volatile (
                 \\pacdb %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .ga => ptr,
         };
@@ -257,22 +273,26 @@ const AArch64_Apple = struct {
             .ia => asm volatile (
                 \\autia %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .ib => asm volatile (
                 \\autib %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .da => asm volatile (
                 \\autda %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .db => asm volatile (
                 \\autdb %[p], %[m]
                 : [p] "={x0}" (p),
-                : [m] "r" (modifier)
+                : [m] "r" (modifier),
+                : .{}
             ),
             .ga => ptr,
         };
@@ -286,7 +306,9 @@ const AArch64_Apple = struct {
         var p: usize = ptr;
         return asm volatile (
             \\xpaci %[p]
-            : [p] "={x0}" (p)
+            : [p] "={x0}" (p),
+            : [_] "r" (@as(usize, 0)),
+            : .{}
         );
     }
 
@@ -294,7 +316,9 @@ const AArch64_Apple = struct {
         var p: usize = ptr;
         return asm volatile (
             \\xpacd %[p]
-            : [p] "={x0}" (p)
+            : [p] "={x0}" (p),
+            : [_] "r" (@as(usize, 0)),
+            : .{}
         );
     }
 
