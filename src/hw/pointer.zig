@@ -139,6 +139,7 @@ pub fn PacSignedPointer(comptime T: type) type {
                     \\pacia %[p], %[m]
                     : [p] "={x0}" (ptr_val),
                     : [m] "r" (modifier)
+                    : "memory"
                 );
                 self.inner = @ptrFromInt(signed_val);
             }
@@ -154,6 +155,7 @@ pub fn PacSignedPointer(comptime T: type) type {
                     \\autia %[p], %[m]
                     : [p] "={x0}" (ptr_val),
                     : [m] "r" (modifier)
+                    : "memory"
                 );
                 // Check for authentication failure (top bits all 1s)
                 if ((authed_val >> 56) == 0xFF) return error.AuthFailed;

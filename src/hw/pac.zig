@@ -52,31 +52,26 @@ else
 // ============================================================================
 
 /// Sign the link register (X30) using PACIASP (IA key + SP context).
-/// This is the most common PAC operation — compiler-inserted for return address protection.
 pub fn signLR() void {
     arch_impl.signLR();
 }
 
 /// Authenticate the link register (X30) using AUTIASP.
-/// On failure, X30 is poisoned and the process crashes on return.
 pub fn authLR() void {
     arch_impl.authLR();
 }
 
 /// Sign a pointer with a specific key and modifier.
-/// The modifier provides context (e.g., SP, or a different pointer) for diversity.
 pub fn sign(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
     return arch_impl.sign(ptr, modifier, key);
 }
 
 /// Authenticate a pointer with a specific key and modifier.
-/// Returns error.AuthFailed if the pointer is forged.
 pub fn auth(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
     return arch_impl.auth(ptr, modifier, key);
 }
 
 /// Strip PAC bits from an instruction pointer (XPACI).
-/// Useful for pointer comparison/logging when the PAC bits are present.
 pub fn stripInstruction(ptr: usize) usize {
     return arch_impl.stripInstruction(ptr);
 }
@@ -124,6 +119,7 @@ const AArch64_Linux = struct {
         asm volatile ("paciasp"
             :
             :
+            : "memory"
         );
     }
 
@@ -131,6 +127,7 @@ const AArch64_Linux = struct {
         asm volatile ("autiasp"
             :
             :
+            : "memory"
         );
     }
 
@@ -141,21 +138,25 @@ const AArch64_Linux = struct {
                 \\pacia %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .ib => asm volatile (
                 \\pacib %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .da => asm volatile (
                 \\pacda %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .db => asm volatile (
                 \\pacdb %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .ga => ptr,
         };
@@ -168,21 +169,25 @@ const AArch64_Linux = struct {
                 \\autia %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .ib => asm volatile (
                 \\autib %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .da => asm volatile (
                 \\autda %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .db => asm volatile (
                 \\autdb %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .ga => ptr,
         };
@@ -197,6 +202,8 @@ const AArch64_Linux = struct {
         return asm volatile (
             \\xpaci %[p]
             : [p] "={x0}" (p)
+            :
+            : "memory"
         );
     }
 
@@ -205,20 +212,22 @@ const AArch64_Linux = struct {
         return asm volatile (
             \\xpacd %[p]
             : [p] "={x0}" (p)
+            :
+            : "memory"
         );
     }
 
     pub fn hasPacAddressAuth() bool {
-        return (getHwcap() & 0x10000) != 0; // HWCAP_PACA = bit 16
+        return (getHwcap() & 0x10000) != 0;
     }
 
     pub fn hasPacGenericAuth() bool {
-        return (getHwcap() & 0x20000) != 0; // HWCAP_PACG = bit 17
+        return (getHwcap() & 0x20000) != 0;
     }
 
     pub fn resetKeys() void {
         const os = @import("os_abstraction.zig");
-        os.prctlPacResetKeys(0xF) catch {}; // Reset all 4 keys, ignore errors
+        os.prctlPacResetKeys(0xF) catch {};
     }
 };
 
@@ -231,6 +240,7 @@ const AArch64_Apple = struct {
         asm volatile ("paciasp"
             :
             :
+            : "memory"
         );
     }
 
@@ -238,6 +248,7 @@ const AArch64_Apple = struct {
         asm volatile ("autiasp"
             :
             :
+            : "memory"
         );
     }
 
@@ -248,21 +259,25 @@ const AArch64_Apple = struct {
                 \\pacia %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .ib => asm volatile (
                 \\pacib %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .da => asm volatile (
                 \\pacda %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .db => asm volatile (
                 \\pacdb %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .ga => ptr,
         };
@@ -275,21 +290,25 @@ const AArch64_Apple = struct {
                 \\autia %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .ib => asm volatile (
                 \\autib %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .da => asm volatile (
                 \\autda %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .db => asm volatile (
                 \\autdb %[p], %[m]
                 : [p] "={x0}" (p),
                 : [m] "r" (modifier)
+                : "memory"
             ),
             .ga => ptr,
         };
@@ -304,6 +323,8 @@ const AArch64_Apple = struct {
         return asm volatile (
             \\xpaci %[p]
             : [p] "={x0}" (p)
+            :
+            : "memory"
         );
     }
 
@@ -312,21 +333,20 @@ const AArch64_Apple = struct {
         return asm volatile (
             \\xpacd %[p]
             : [p] "={x0}" (p)
+            :
+            : "memory"
         );
     }
 
     pub fn hasPacAddressAuth() bool {
-        return true; // Apple Silicon always has PAC (arm64e ABI)
+        return true;
     }
 
     pub fn hasPacGenericAuth() bool {
         return true;
     }
 
-    pub fn resetKeys() void {
-        // No-op: Apple Silicon PAC keys are managed by kernel + EL3
-        // User space cannot reset them
-    }
+    pub fn resetKeys() void {}
 };
 
 // ============================================================================
