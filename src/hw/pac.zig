@@ -1,109 +1,62 @@
-//! ARM Pointer Authentication (PAC) instruction wrappers.
-//!
-//! PAC computes a cryptographic MAC over a pointer value and stores it in the
-//! unused upper bits of the pointer. On dereference, the MAC is recomputed and
-//! compared — if it doesn't match, the pointer is poisoned and the process crashes.
-//!
-//! Supported targets:
-//! - AArch64 Linux: full PAC support via inline assembly + getauxval detection
-//! - AArch64 macOS (Apple Silicon): full PAC support (arm64e ABI)
-//! - x86_64 / other: no-op fallbacks
-
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// PAC hardware keys (128-bit each, managed by kernel)
-pub const PacKey = enum {
-    /// Instruction key A — return addresses, function pointers
-    ia,
-    /// Instruction key B — alternate instruction auth
-    ib,
-    /// Data key A — data pointer authentication
-    da,
-    /// Data key B — alternate data auth
-    db,
-    /// Generic key — PACGA instruction (32-bit hash)
-    ga,
-};
+pub const PacKey = enum { ia, ib, da, db, ga };
 
-/// PAC-related errors
 pub const PacError = error{
     AuthFailed,
     NotSupported,
 };
 
-/// Runtime PAC feature detection result
 pub const PacSupport = struct {
     address_auth: bool,
     generic_auth: bool,
 };
-
-// ============================================================================
-// Architecture-specific implementation
-// ============================================================================
 
 const arch_impl = if (builtin.cpu.arch == .aarch64)
     if (builtin.os.tag == .linux) AArch64_Linux else AArch64_Apple
 else
     NoPAC;
 
-// ============================================================================
-// Public API (facade)
-// ============================================================================
-
-/// Sign the link register (X30) using PACIASP (IA key + SP context).
 pub fn signLR() void {
     arch_impl.signLR();
 }
 
-/// Authenticate the link register (X30) using AUTIASP.
 pub fn authLR() void {
     arch_impl.authLR();
 }
 
-/// Sign a pointer with a specific key and modifier.
 pub fn sign(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
     return arch_impl.sign(ptr, modifier, key);
 }
 
-/// Authenticate a pointer with a specific key and modifier.
 pub fn auth(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
     return arch_impl.auth(ptr, modifier, key);
 }
 
-/// Strip PAC bits from an instruction pointer (XPACI).
 pub fn stripInstruction(ptr: usize) usize {
     return arch_impl.stripInstruction(ptr);
 }
 
-/// Strip PAC bits from a data pointer (XPACD).
 pub fn stripData(ptr: usize) usize {
     return arch_impl.stripData(ptr);
 }
 
-/// Check if PAC address authentication is supported.
 pub fn hasPacAddressAuth() bool {
     return arch_impl.hasPacAddressAuth();
 }
 
-/// Check if PAC generic authentication is supported.
 pub fn hasPacGenericAuth() bool {
     return arch_impl.hasPacGenericAuth();
 }
 
-/// Check if any PAC feature is supported.
 pub fn isSupported() bool {
     return arch_impl.hasPacAddressAuth() or arch_impl.hasPacGenericAuth();
 }
 
-/// Reset all PAC keys to fresh random values (Linux only, no-op on macOS).
 pub fn resetKeys() void {
     arch_impl.resetKeys();
 }
-
-// ============================================================================
-// AArch64 Linux Implementation
-// ============================================================================
 
 const AArch64_Linux = struct {
     var hwcap_cache: ?u32 = null;
@@ -125,88 +78,91 @@ const AArch64_Linux = struct {
 
     pub fn sign(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
         var p: usize = ptr;
-        return switch (key) {
+        switch (key) {
             .ia => asm volatile (
                 \\pacia %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
             .ib => asm volatile (
                 \\pacib %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
             .da => asm volatile (
                 \\pacda %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
             .db => asm volatile (
                 \\pacdb %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
-            .ga => ptr,
-        };
+            .ga => {},
+        }
+        return p;
     }
 
     pub fn auth(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
         var p: usize = ptr;
-        const result = switch (key) {
+        switch (key) {
             .ia => asm volatile (
                 \\autia %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
             .ib => asm volatile (
                 \\autib %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
             .da => asm volatile (
                 \\autda %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
             .db => asm volatile (
                 \\autdb %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
-            .ga => ptr,
-        };
-        if (key == .ga) return result;
-        const top_bits = result >> 56;
+            .ga => {},
+        }
+        if (key == .ga) return p;
+        const top_bits = p >> 56;
         if (top_bits == 0xFF) return error.AuthFailed;
-        return result;
+        return p;
     }
 
     pub fn stripInstruction(ptr: usize) usize {
         var p: usize = ptr;
-        return asm volatile (
+        asm volatile (
             \\xpaci %[p]
-            : [p] "={x0}" (p),
+            : [p] "+{x0}" (p),
             : [_] "r" (@as(usize, 0)),
             : .{}
         );
+        return p;
     }
 
     pub fn stripData(ptr: usize) usize {
         var p: usize = ptr;
-        return asm volatile (
+        asm volatile (
             \\xpacd %[p]
-            : [p] "={x0}" (p),
+            : [p] "+{x0}" (p),
             : [_] "r" (@as(usize, 0)),
             : .{}
         );
+        return p;
     }
 
     pub fn hasPacAddressAuth() bool {
@@ -223,10 +179,6 @@ const AArch64_Linux = struct {
     }
 };
 
-// ============================================================================
-// AArch64 Apple Silicon Implementation
-// ============================================================================
-
 const AArch64_Apple = struct {
     pub fn signLR() void {
         asm volatile ("paciasp" ::: .{});
@@ -238,88 +190,91 @@ const AArch64_Apple = struct {
 
     pub fn sign(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
         var p: usize = ptr;
-        return switch (key) {
+        switch (key) {
             .ia => asm volatile (
                 \\pacia %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
             .ib => asm volatile (
                 \\pacib %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
             .da => asm volatile (
                 \\pacda %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
             .db => asm volatile (
                 \\pacdb %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
-            .ga => ptr,
-        };
+            .ga => {},
+        }
+        return p;
     }
 
     pub fn auth(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
         var p: usize = ptr;
-        const result = switch (key) {
+        switch (key) {
             .ia => asm volatile (
                 \\autia %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
             .ib => asm volatile (
                 \\autib %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
             .da => asm volatile (
                 \\autda %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
             .db => asm volatile (
                 \\autdb %[p], %[m]
-                : [p] "={x0}" (p),
+                : [p] "+{x0}" (p),
                 : [m] "r" (modifier),
                 : .{}
             ),
-            .ga => ptr,
-        };
-        if (key == .ga) return result;
-        const top_bits = result >> 56;
+            .ga => {},
+        }
+        if (key == .ga) return p;
+        const top_bits = p >> 56;
         if (top_bits == 0xFF) return error.AuthFailed;
-        return result;
+        return p;
     }
 
     pub fn stripInstruction(ptr: usize) usize {
         var p: usize = ptr;
-        return asm volatile (
+        asm volatile (
             \\xpaci %[p]
-            : [p] "={x0}" (p),
+            : [p] "+{x0}" (p),
             : [_] "r" (@as(usize, 0)),
             : .{}
         );
+        return p;
     }
 
     pub fn stripData(ptr: usize) usize {
         var p: usize = ptr;
-        return asm volatile (
+        asm volatile (
             \\xpacd %[p]
-            : [p] "={x0}" (p),
+            : [p] "+{x0}" (p),
             : [_] "r" (@as(usize, 0)),
             : .{}
         );
+        return p;
     }
 
     pub fn hasPacAddressAuth() bool {
@@ -332,10 +287,6 @@ const AArch64_Apple = struct {
 
     pub fn resetKeys() void {}
 };
-
-// ============================================================================
-// No-PAC Fallback (x86_64, unsupported ARM)
-// ============================================================================
 
 const NoPAC = struct {
     pub fn signLR() void {}
@@ -371,10 +322,6 @@ const NoPAC = struct {
 
     pub fn resetKeys() void {}
 };
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 test "PAC isSupported returns a value without crashing" {
     _ = isSupported();

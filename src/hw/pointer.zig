@@ -135,12 +135,13 @@ pub fn PacSignedPointer(comptime T: type) type {
         pub fn sign(self: *Self, modifier: usize) void {
             if (builtin.cpu.arch == .aarch64) {
                 var ptr_val: usize = @intFromPtr(self.inner);
-                const signed_val = asm volatile (
+                asm volatile (
                     \\pacia %[p], %[m]
-                    : [p] "={x0}" (ptr_val),
-                    : [m] "r" (modifier)
+                    : [p] "+{x0}" (ptr_val),
+                    : [m] "r" (modifier),
+                    : .{}
                 );
-                self.inner = @ptrFromInt(signed_val);
+                self.inner = @ptrFromInt(ptr_val);
             }
             self.is_signed = true;
         }
@@ -150,14 +151,15 @@ pub fn PacSignedPointer(comptime T: type) type {
         pub fn auth(self: *Self, modifier: usize) error{AuthFailed}!void {
             if (builtin.cpu.arch == .aarch64) {
                 var ptr_val: usize = @intFromPtr(self.inner);
-                const authed_val = asm volatile (
+                asm volatile (
                     \\autia %[p], %[m]
-                    : [p] "={x0}" (ptr_val),
-                    : [m] "r" (modifier)
+                    : [p] "+{x0}" (ptr_val),
+                    : [m] "r" (modifier),
+                    : .{}
                 );
                 // Check for authentication failure (top bits all 1s)
-                if ((authed_val >> 56) == 0xFF) return error.AuthFailed;
-                self.inner = @ptrFromInt(authed_val);
+                if ((ptr_val >> 56) == 0xFF) return error.AuthFailed;
+                self.inner = @ptrFromInt(ptr_val);
             }
             self.is_signed = false;
         }
