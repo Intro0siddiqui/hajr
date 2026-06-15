@@ -137,28 +137,29 @@ const AArch64_Linux = struct {
     }
 
     pub fn sign(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
+        var p: usize = ptr;
         return switch (key) {
             .ia => asm volatile (
                 \\pacia %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
             .ib => asm volatile (
                 \\pacib %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
             .da => asm volatile (
                 \\pacda %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
             .db => asm volatile (
                 \\pacdb %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
@@ -167,28 +168,29 @@ const AArch64_Linux = struct {
     }
 
     pub fn auth(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
+        var p: usize = ptr;
         const result = switch (key) {
             .ia => asm volatile (
                 \\autia %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
             .ib => asm volatile (
                 \\autib %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
             .da => asm volatile (
                 \\autda %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
             .db => asm volatile (
                 \\autdb %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
@@ -201,18 +203,20 @@ const AArch64_Linux = struct {
     }
 
     pub fn stripInstruction(ptr: usize) usize {
+        var p: usize = ptr;
         return asm volatile (
             \\xpaci %[p]
-            : [p] "={x0}" (ptr)
+            : [p] "={x0}" (p)
             :
             : "cc"
         );
     }
 
     pub fn stripData(ptr: usize) usize {
+        var p: usize = ptr;
         return asm volatile (
             \\xpacd %[p]
-            : [p] "={x0}" (ptr)
+            : [p] "={x0}" (p)
             :
             : "cc"
         );
@@ -254,28 +258,29 @@ const AArch64_Apple = struct {
     }
 
     pub fn sign(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
+        var p: usize = ptr;
         return switch (key) {
             .ia => asm volatile (
                 \\pacia %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
             .ib => asm volatile (
                 \\pacib %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
             .da => asm volatile (
                 \\pacda %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
             .db => asm volatile (
                 \\pacdb %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
@@ -284,28 +289,29 @@ const AArch64_Apple = struct {
     }
 
     pub fn auth(ptr: usize, modifier: usize, key: PacKey) PacError!usize {
+        var p: usize = ptr;
         const result = switch (key) {
             .ia => asm volatile (
                 \\autia %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
             .ib => asm volatile (
                 \\autib %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
             .da => asm volatile (
                 \\autda %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
             .db => asm volatile (
                 \\autdb %[p], %[m]
-                : [p] "={x0}" (ptr),
+                : [p] "={x0}" (p),
                 : [m] "r" (modifier)
                 : "cc"
             ),
@@ -318,18 +324,20 @@ const AArch64_Apple = struct {
     }
 
     pub fn stripInstruction(ptr: usize) usize {
+        var p: usize = ptr;
         return asm volatile (
             \\xpaci %[p]
-            : [p] "={x0}" (ptr)
+            : [p] "={x0}" (p)
             :
             : "cc"
         );
     }
 
     pub fn stripData(ptr: usize) usize {
+        var p: usize = ptr;
         return asm volatile (
             \\xpacd %[p]
-            : [p] "={x0}" (ptr)
+            : [p] "={x0}" (p)
             :
             : "cc"
         );

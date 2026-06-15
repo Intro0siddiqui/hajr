@@ -134,7 +134,7 @@ pub fn PacSignedPointer(comptime T: type) type {
         /// On AArch64, this embeds a PAC in the upper bits.
         pub fn sign(self: *Self, modifier: usize) void {
             if (builtin.cpu.arch == .aarch64) {
-                const ptr_val = @intFromPtr(self.inner);
+                var ptr_val: usize = @intFromPtr(self.inner);
                 const signed_val = asm volatile (
                     \\pacia %[p], %[m]
                     : [p] "={x0}" (ptr_val),
@@ -150,7 +150,7 @@ pub fn PacSignedPointer(comptime T: type) type {
         /// Returns error.AuthFailed if the pointer has been tampered with.
         pub fn auth(self: *Self, modifier: usize) error{AuthFailed}!void {
             if (builtin.cpu.arch == .aarch64) {
-                const ptr_val = @intFromPtr(self.inner);
+                var ptr_val: usize = @intFromPtr(self.inner);
                 const authed_val = asm volatile (
                     \\autia %[p], %[m]
                     : [p] "={x0}" (ptr_val),
