@@ -337,6 +337,7 @@ pub const LockdownError = error{
     SandboxInitFailed,
     MitigationPolicyFailed,
     TokenOpenFailed,
+    OutOfMemory,
 };
 
 /// Per-process Landlock path rules for Linux.

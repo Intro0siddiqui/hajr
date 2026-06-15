@@ -22,6 +22,7 @@ pub const LockdownError = error{
     MitigationPolicyFailed,
     TokenOpenFailed,
     AlreadyLocked,
+    OutOfMemory,
 };
 
 var locked: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
