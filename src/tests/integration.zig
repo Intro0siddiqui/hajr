@@ -9,7 +9,6 @@ const ipc = @import("../ipc/ipc.zig");
 // ============================================================================
 
 test "Zero-Task Bridge: JS Engine Memory Passing" {
-    std.debug.print("Running Zero-Task Bridge Test...\n", .{});
     const allocator = std.testing.allocator;
 
     // 1. Simulate JS Engine initialization
