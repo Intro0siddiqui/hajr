@@ -76,3 +76,11 @@ pub fn monotonicTimestamp() u64 {
     _ = posix.system.clock_gettime(posix.system.CLOCK.MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
+
+/// Portable nanosleep using POSIX nanosleep syscall.
+pub fn sleepNs(ns: u64) void {
+    const sec: i64 = @intCast(ns / std.time.ns_per_s);
+    const nsec: i64 = @intCast(ns % std.time.ns_per_s);
+    var ts = posix.system.timespec{ .sec = sec, .nsec = nsec };
+    _ = posix.system.nanosleep(&ts, null);
+}

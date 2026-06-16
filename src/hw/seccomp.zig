@@ -133,6 +133,9 @@ const SYS_FCHMODAT: u32 = if (is_64) 268 else 299;
 const SYS_FCHOWNAT: u32 = if (is_64) 260 else 290;
 const SYS_OPENAT2: u32 = if (is_64) 437 else 0; // arm64 may not have this
 const SYS_CLOSE_RANGE: u32 = if (is_64) 436 else 0;
+const SYS_PIDFD_GETFD: u32 = if (is_64) 434 else 434;
+const SYS_PROCESS_VM_READV: u32 = if (is_64) 310 else 270;
+const SYS_PROCESS_VM_WRITEV: u32 = if (is_64) 311 else 271;
 const SYS_PIPE2: u32 = if (is_64) 293 else 0;
 const SYS_DUP3: u32 = if (is_64) 292 else 0;
 const SYS_EPOLL_CREATE1: u32 = if (is_64) 291 else 20;
@@ -315,6 +318,10 @@ const network_process_filter = buildFilter(&[_]u32{
     SYS_SENDMSG, SYS_RECVMSG, SYS_SHUTDOWN,
     SYS_GETSOCKNAME, SYS_GETPEERNAME,
     SYS_SETSOCKOPT, SYS_GETSOCKOPT,
+
+    // === Hajr IPC (FD transfer + cross-process read) ===
+    SYS_PIDFD_GETFD, SYS_PROCESS_VM_READV, SYS_PROCESS_VM_WRITEV,
+    SYS_DUP3, SYS_CLOSE_RANGE,
 });
 
 /// GPUProcess: minimal — memory + IPC only (closest to original jit_allowed)
@@ -417,6 +424,10 @@ const network_process_debug_filter = buildFilterWithAction(&[_]u32{
     SYS_SENDMSG, SYS_RECVMSG, SYS_SHUTDOWN,
     SYS_GETSOCKNAME, SYS_GETPEERNAME,
     SYS_SETSOCKOPT, SYS_GETSOCKOPT,
+
+    // === Hajr IPC (FD transfer + cross-process read) ===
+    SYS_PIDFD_GETFD, SYS_PROCESS_VM_READV, SYS_PROCESS_VM_WRITEV,
+    SYS_DUP3, SYS_CLOSE_RANGE,
 }, SECCOMP_RET_LOG);
 
 const gpu_process_debug_filter = buildFilterWithAction(&[_]u32{
