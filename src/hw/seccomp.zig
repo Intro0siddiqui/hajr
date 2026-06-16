@@ -492,22 +492,245 @@ pub fn install(kind: FilterKind) !void {
 // Tests
 // ============================================================================
 
+fn scanFilterForSyscall(comptime nrs: []const u32, target: u32) bool {
+    // BPF layout: [load_arch, check_arch, load_nr, ...check_each_nr, deny, allow]
+    // Each check instruction has .k == syscall_number
+    for (nrs) |nr| {
+        if (nr == target) return true;
+    }
+    return false;
+}
+
+fn scanBpfForSyscall(comptime prog: []const sock_filter, target: u32) bool {
+    // BPF layout: [0]=load_arch, [1]=check_arch, [2]=load_nr, [3..N]=syscall_checks, [N]=deny, [N+1]=allow
+    // Skip the first 3 instructions (arch load/check and nr load) to avoid false matches
+    if (prog.len <= 4) return false;
+    for (prog[3 .. prog.len - 2]) |inst| {
+        if (inst.code == (BPF_JMP | BPF_JEQ | BPF_K) and inst.k == target) return true;
+    }
+    return false;
+}
+
+test "seccomp syscall constants — x86_64 values" {
+    if (builtin.cpu.arch != .x86_64) return error.SkipZigTest;
+
+    try std.testing.expectEqual(@as(u32, 434), SYS_PIDFD_GETFD);
+    try std.testing.expectEqual(@as(u32, 310), SYS_PROCESS_VM_READV);
+    try std.testing.expectEqual(@as(u32, 311), SYS_PROCESS_VM_WRITEV);
+    try std.testing.expectEqual(@as(u32, 292), SYS_DUP3);
+    try std.testing.expectEqual(@as(u32, 436), SYS_CLOSE_RANGE);
+}
+
+test "seccomp syscall constants — aarch64 values" {
+    if (builtin.cpu.arch != .aarch64) return error.SkipZigTest;
+
+    try std.testing.expectEqual(@as(u32, 434), SYS_PIDFD_GETFD);
+    try std.testing.expectEqual(@as(u32, 270), SYS_PROCESS_VM_READV);
+    try std.testing.expectEqual(@as(u32, 271), SYS_PROCESS_VM_WRITEV);
+    try std.testing.expectEqual(@as(u32, 292), SYS_DUP3);
+    try std.testing.expectEqual(@as(u32, 436), SYS_CLOSE_RANGE);
+}
+
+test "seccomp network filter — contains pidfd_getfd" {
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_PIDFD_GETFD));
+}
+
+test "seccomp network filter — contains process_vm_readv" {
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_PROCESS_VM_READV));
+}
+
+test "seccomp network filter — contains process_vm_writev" {
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_PROCESS_VM_WRITEV));
+}
+
+test "seccomp network filter — contains dup3" {
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_DUP3));
+}
+
+test "seccomp network filter — contains close_range" {
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_CLOSE_RANGE));
+}
+
+test "seccomp network filter — does NOT contain pidfd_getfd in web filter" {
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_PIDFD_GETFD));
+}
+
+test "seccomp network filter — does NOT contain process_vm_readv in web filter" {
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_PROCESS_VM_READV));
+}
+
+test "seccomp network debug filter — contains pidfd_getfd" {
+    try std.testing.expect(scanBpfForSyscall(&network_process_debug_filter, SYS_PIDFD_GETFD));
+}
+
+test "seccomp network debug filter — contains process_vm_readv" {
+    try std.testing.expect(scanBpfForSyscall(&network_process_debug_filter, SYS_PROCESS_VM_READV));
+}
+
+test "seccomp network debug filter — contains process_vm_writev" {
+    try std.testing.expect(scanBpfForSyscall(&network_process_debug_filter, SYS_PROCESS_VM_WRITEV));
+}
+
+test "seccomp network debug filter — contains dup3" {
+    try std.testing.expect(scanBpfForSyscall(&network_process_debug_filter, SYS_DUP3));
+}
+
+test "seccomp network debug filter — contains close_range" {
+    try std.testing.expect(scanBpfForSyscall(&network_process_debug_filter, SYS_CLOSE_RANGE));
+}
+
+test "seccomp network filter — contains core Hajr syscalls" {
+    // socket, connect, epoll, pipe — base IPC stack
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_SOCKET));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_CONNECT));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_EPOLL_CREATE1));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_EPOLL_CTL));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_EPOLL_WAIT));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_PIPE2));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_EVENTFD2));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_SOCKETPAIR));
+}
+
+test "seccomp network filter — size ordering" {
+    // network > web > gpu > minimal
+    try std.testing.expect(network_process_filter.len > web_process_filter.len);
+    try std.testing.expect(web_process_filter.len > gpu_process_filter.len);
+    try std.testing.expect(gpu_process_filter.len > minimal_filter.len);
+    // debug variants same size as production
+    try std.testing.expectEqual(network_process_filter.len, network_process_debug_filter.len);
+    try std.testing.expectEqual(web_process_filter.len, web_process_debug_filter.len);
+    try std.testing.expectEqual(gpu_process_filter.len, gpu_process_debug_filter.len);
+}
+
+test "seccomp web filter — MUST NOT contain networking syscalls" {
+    // Web process should never open raw sockets
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_SOCKET));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_CONNECT));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_BIND));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_LISTEN));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_ACCEPT));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_ACCEPT4));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_SENDTO));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_RECVFROM));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_SENDMSG));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_RECVMSG));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_SHUTDOWN));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_GETSOCKNAME));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_GETPEERNAME));
+}
+
+test "seccomp web filter — MUST NOT contain Hajr IPC syscalls" {
+    // Web process should not pidfd_getfd or process_vm_readv
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_PIDFD_GETFD));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_PROCESS_VM_READV));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_PROCESS_VM_WRITEV));
+}
+
+test "seccomp gpu filter — MUST NOT contain networking syscalls" {
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_SOCKET));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_CONNECT));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_BIND));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_SENDMSG));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_RECVMSG));
+}
+
+test "seccomp gpu filter — MUST NOT contain Hajr IPC syscalls" {
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_PIDFD_GETFD));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_PROCESS_VM_READV));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_PROCESS_VM_WRITEV));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_DUP3));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_CLOSE_RANGE));
+}
+
+test "seccomp gpu filter — MUST NOT contain thread mgmt beyond clone/futex" {
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_TGKILL));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_TKILL));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, SYS_SET_ROBUST_LIST));
+}
+
+test "seccomp ALL filters — MUST NOT contain ptrace (101)" {
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, 101));
+    try std.testing.expect(!scanBpfForSyscall(&network_process_filter, 101));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, 101));
+}
+
+test "seccomp ALL filters — MUST NOT contain mount (166)" {
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, 166));
+    try std.testing.expect(!scanBpfForSyscall(&network_process_filter, 166));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, 166));
+}
+
+test "seccomp ALL filters — MUST NOT contain reboot (169)" {
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, 169));
+    try std.testing.expect(!scanBpfForSyscall(&network_process_filter, 169));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, 169));
+}
+
+test "seccomp ALL filters — MUST NOT contain init_module (175)" {
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, 175));
+    try std.testing.expect(!scanBpfForSyscall(&network_process_filter, 175));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, 175));
+}
+
+test "seccomp ALL filters — MUST NOT contain unshare (272)" {
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, 272));
+    try std.testing.expect(!scanBpfForSyscall(&network_process_filter, 272));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, 272));
+}
+
+test "seccomp ALL filters — MUST NOT contain setns (308)" {
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, 308));
+    try std.testing.expect(!scanBpfForSyscall(&network_process_filter, 308));
+    try std.testing.expect(!scanBpfForSyscall(&gpu_process_filter, 308));
+}
+
+test "seccomp network filter — MUST contain all core syscalls" {
+    // Process management
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_GETPID));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_GETPPID));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_GETUID));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_GETGID));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_GETEUID));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_GETEGID));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_EXIT_GROUP));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_PRCTL));
+
+    // Thread management
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_CLONE));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_FUTEX));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_GETTID));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_SET_TID_ADDRESS));
+
+    // Signals
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_RT_SIGRETURN));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_RT_SIGACTION));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_RT_SIGPROCMASK));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_SIGALTSTACK));
+
+    // Memory
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_MMAP));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_MUNMAP));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_MPROTECT));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_BRK));
+
+    // I/O
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_READ));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_WRITE));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_CLOSE));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_OPENAT));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_EPOLL_CREATE1));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_EPOLL_CTL));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_EPOLL_WAIT));
+
+    // MPK
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_PKEY_ALLOC));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_PKEY_FREE));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_PKEY_MPROTECT));
+}
+
 test "seccomp filter layout — web process" {
     try std.testing.expect(web_process_filter.len > 0);
     try std.testing.expect(web_process_filter[web_process_filter.len - 1].k == SECCOMP_RET_ALLOW);
     try std.testing.expect(web_process_filter[web_process_filter.len - 2].k == SECCOMP_RET_KILL);
     try std.testing.expectEqual(@as(u8, 0), web_process_filter[1].jt);
-}
-
-test "seccomp filter layout — network process" {
-    try std.testing.expect(network_process_filter.len > web_process_filter.len);
-}
-
-test "seccomp filter layout — gpu process" {
-    try std.testing.expect(gpu_process_filter.len < web_process_filter.len);
-    try std.testing.expect(gpu_process_filter.len > minimal_filter.len);
-}
-
-test "seccomp filter layout — minimal" {
-    try std.testing.expect(minimal_filter.len > 0);
 }
