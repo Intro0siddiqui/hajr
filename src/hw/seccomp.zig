@@ -133,7 +133,7 @@ const SYS_FCHMODAT: u32 = if (is_64) 268 else 299;
 const SYS_FCHOWNAT: u32 = if (is_64) 260 else 290;
 const SYS_OPENAT2: u32 = if (is_64) 437 else 0; // arm64 may not have this
 const SYS_CLOSE_RANGE: u32 = if (is_64) 436 else 0;
-const SYS_PIDFD_GETFD: u32 = if (is_64) 434 else 434;
+const SYS_PIDFD_GETFD: u32 = if (is_64) 438 else 438;
 const SYS_PROCESS_VM_READV: u32 = if (is_64) 310 else 270;
 const SYS_PROCESS_VM_WRITEV: u32 = if (is_64) 311 else 271;
 const SYS_PIPE2: u32 = if (is_64) 293 else 0;
@@ -514,7 +514,7 @@ fn scanBpfForSyscall(comptime prog: []const sock_filter, target: u32) bool {
 test "seccomp syscall constants — x86_64 values" {
     if (builtin.cpu.arch != .x86_64) return error.SkipZigTest;
 
-    try std.testing.expectEqual(@as(u32, 434), SYS_PIDFD_GETFD);
+    try std.testing.expectEqual(@as(u32, 438), SYS_PIDFD_GETFD);
     try std.testing.expectEqual(@as(u32, 310), SYS_PROCESS_VM_READV);
     try std.testing.expectEqual(@as(u32, 311), SYS_PROCESS_VM_WRITEV);
     try std.testing.expectEqual(@as(u32, 292), SYS_DUP3);
@@ -524,7 +524,7 @@ test "seccomp syscall constants — x86_64 values" {
 test "seccomp syscall constants — aarch64 values" {
     if (builtin.cpu.arch != .aarch64) return error.SkipZigTest;
 
-    try std.testing.expectEqual(@as(u32, 434), SYS_PIDFD_GETFD);
+    try std.testing.expectEqual(@as(u32, 438), SYS_PIDFD_GETFD);
     try std.testing.expectEqual(@as(u32, 270), SYS_PROCESS_VM_READV);
     try std.testing.expectEqual(@as(u32, 271), SYS_PROCESS_VM_WRITEV);
     try std.testing.expectEqual(@as(u32, 292), SYS_DUP3);

@@ -206,6 +206,7 @@ pub fn spawnCompartment(
                 "ZAWRA_HAJR_RING1=",
                 "ZAWRA_HAJR_RING2=",
                 "ZAWRA_HAJR_PARENT_PIDFD=",
+                "ZAWRA_HAJR_FDTRANSFER=",
             };
             var i_env: usize = 0;
             while (envp[i_env]) |env_ptr| : (i_env += 1) {
