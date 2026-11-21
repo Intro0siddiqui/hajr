@@ -16,6 +16,10 @@ pub const TraceEventKind = enum(u8) {
     router_dispatch = 0x10,
     channel_send = 0x11,
     channel_recv = 0x12,
+    ipc_send = 0x20,
+    ipc_recv = 0x21,
+    policy_event = 0x30,
+    _,
 };
 
 pub const ProcessKind = enum(u8) {
@@ -61,6 +65,32 @@ pub const TraceRing = struct {
 pub var global: atomic.Value(?*TraceRing) = atomic.Value(?*TraceRing).init(null);
 
 var init_once: atomic.Value(u32) = atomic.Value(u32).init(0);
+var global_ipc_seq: atomic.Value(u64) = atomic.Value(u64).init(1);
+
+var msg_name_table: [4096]?[*:0]const u8 = [_]?[*:0]const u8{null} ** 4096;
+
+pub fn registerMsgName(id: u32, name: [*:0]const u8) void {
+    if (id < 4096) {
+        if (@atomicLoad(?[*:0]const u8, &msg_name_table[id], .acquire) == null) {
+            const span = std.mem.span(name);
+            const duped = std.heap.c_allocator.dupeZ(u8, span) catch return;
+            @atomicStore(?[*:0]const u8, &msg_name_table[id], duped.ptr, .release);
+        }
+    }
+}
+
+pub fn getMsgName(id: u32) ?[]const u8 {
+    if (id < 4096) {
+        if (@atomicLoad(?[*:0]const u8, &msg_name_table[id], .acquire)) |ptr| {
+            return std.mem.span(ptr);
+        }
+    }
+    return null;
+}
+
+pub fn nextIpcSeq() u64 {
+    return global_ipc_seq.fetchAdd(1, .acq_rel);
+}
 
 pub var current_process_kind: atomic.Value(u8) = atomic.Value(u8).init(@intFromEnum(ProcessKind.unknown));
 
@@ -209,6 +239,49 @@ pub fn recordIpc(
         .was_dropped = 0,
         .source_tier = source_tier,
         .target_tier = target_tier,
+        .occupied = 1,
+    };
+}
+
+pub fn recordPolicy(
+    request_id: u64,
+    action: u8,
+    reason_code: u32,
+) void {
+    const tr = global.load(.acquire) orelse return;
+
+    const head = tr.head.fetchAdd(1, .acq_rel);
+    const used = head -% tr.tail.load(.acquire);
+    if (used >= TRACE_BACKPRESSURE_WATERMARK) {
+        _ = tr.dropped.fetchAdd(1, .acq_rel);
+        return;
+    }
+
+    const idx = head % TRACE_SLOTS;
+    const slot = &tr.slots[idx];
+
+    var spins: u8 = 0;
+    while (@atomicLoad(u8, &slot.occupied, .acquire) != 0) : (spins += 1) {
+        if (spins > 64) {
+            _ = tr.dropped.fetchAdd(1, .acq_rel);
+            return;
+        }
+        std.atomic.spinLoopHint();
+    }
+
+    slot.* = TraceRecord{
+        .timestamp_ns = hw.posix_io.monotonicTimestamp(),
+        .source_id = request_id,
+        .target_id = 0,
+        .ipc_sequence = nextIpcSeq(),
+        .payload_len = action,
+        .msg_type = reason_code,
+        .event_kind = @intFromEnum(TraceEventKind.policy_event),
+        .source_proc = current_process_kind.load(.acquire),
+        .target_proc = @intFromEnum(ProcessKind.unknown),
+        .was_dropped = 0,
+        .source_tier = action,
+        .target_tier = 0,
         .occupied = 1,
     };
 }

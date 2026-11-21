@@ -74,16 +74,53 @@ const win32 = if (builtin.os.tag == .windows) struct {
 // Trace Subsystem FFI Exports
 // ============================================================================
 
-export fn hajr_trace_init() callconv(.c) void {
+pub export fn hajr_trace_init() callconv(.c) void {
     trace.init(std.heap.c_allocator);
 }
 
-export fn hajr_trace_set_process_kind(kind: u8) callconv(.c) void {
+pub export fn hajr_trace_set_process_kind(kind: u8) callconv(.c) void {
     trace.setProcessKind(@enumFromInt(kind));
 }
 
-export fn hajr_trace_get_process_kind() callconv(.c) u8 {
+pub export fn hajr_trace_get_process_kind() callconv(.c) u8 {
     return @intFromEnum(trace.getProcessKind());
+}
+
+pub export fn hajr_trace_ipc_msg(msg_name_id: u32, dst_id: u64, payload_len: u32, direction: u8) callconv(.c) void {
+    if (trace.global.load(.acquire) == null) {
+        trace.init(std.heap.c_allocator);
+    }
+    const event: trace.TraceEventKind = if (direction == 0) .ipc_send else .ipc_recv;
+    trace.recordIpc(
+        event,
+        if (direction == 0) 0 else dst_id,
+        dst_id,
+        trace.nextIpcSeq(),
+        payload_len,
+        msg_name_id,
+        trace.getProcessKind(),
+        .unknown,
+        0,
+        0,
+    );
+}
+
+pub export fn hajr_trace_register_msg(msg_name_id: u32, name: [*:0]const u8) callconv(.c) void {
+    trace.registerMsgName(msg_name_id, name);
+}
+
+pub export fn hajr_trace_policy_event(request_id: u64, action: u8, reason_code: u32) callconv(.c) void {
+    if (trace.global.load(.acquire) == null) {
+        trace.init(std.heap.c_allocator);
+    }
+    trace.recordPolicy(request_id, action, reason_code);
+
+    if (std.c.getenv("HAJR_IPC_DEBUG") != null) {
+        var buf: [128]u8 = undefined;
+        if (std.fmt.bufPrint(&buf, "[HAJR-POLICY-TRACE] req={d} action={d} reason={d}\n", .{ request_id, action, reason_code })) |msg| {
+            _ = hw.posix_io.fileWrite(2, msg, 0) catch 0;
+        } else |_| {}
+    }
 }
 
 // ============================================================================

@@ -21,6 +21,10 @@ fn eventKindName(kind: u8) []const u8 {
         .router_dispatch => "router_dispatch",
         .channel_send => "channel_send",
         .channel_recv => "channel_recv",
+        .ipc_send => "ipc_send",
+        .ipc_recv => "ipc_recv",
+        .policy_event => "policy_event",
+        _ => "unknown",
     };
 }
 
@@ -133,22 +137,60 @@ pub fn drainLoop(tr: *trace.TraceRing, path: [*:0]const u8) void {
             const event_name = eventKindName(rec.event_kind);
             const src_name = processKindName(rec.source_proc);
             const dst_name = processKindName(rec.target_proc);
-            const line = std.fmt.bufPrint(
-                &buf,
-                "  {{\"ph\":\"i\",\"s\":\"p\",\"ts\":{d},\"pid\":{d},\"tid\":{d},\"name\":\"{s}\",\"args\":{{\"seq\":{d},\"src\":\"{s}\",\"dst\":\"{s}\",\"len\":{d},\"tier_src\":{d},\"tier_dst\":{d}}}}}",
-                .{
-                    rec.timestamp_ns / 1000,
-                    pid,
-                    rec.source_id,
-                    event_name,
-                    rec.ipc_sequence,
-                    src_name,
-                    dst_name,
-                    rec.payload_len,
-                    rec.source_tier,
-                    rec.target_tier,
-                },
-            ) catch continue;
+            const msg_name_opt = trace.getMsgName(rec.msg_type);
+            const line = if (rec.event_kind == @intFromEnum(trace.TraceEventKind.policy_event))
+                std.fmt.bufPrint(
+                    &buf,
+                    "  {{\"ph\":\"i\",\"s\":\"p\",\"ts\":{d},\"pid\":{d},\"tid\":{d},\"name\":\"policy_event\",\"args\":{{\"req\":{d},\"action\":{d},\"reason\":{d},\"proc\":\"{s}\"}}}}",
+                    .{
+                        rec.timestamp_ns / 1000,
+                        pid,
+                        rec.source_id,
+                        rec.source_id,
+                        rec.payload_len,
+                        rec.msg_type,
+                        src_name,
+                    },
+                ) catch continue
+            else if (msg_name_opt) |msg_name|
+                std.fmt.bufPrint(
+                    &buf,
+                    "  {{\"ph\":\"i\",\"s\":\"p\",\"ts\":{d},\"pid\":{d},\"tid\":{d},\"name\":\"{s}\",\"args\":{{\"seq\":{d},\"src\":\"{s}\",\"dst\":\"{s}\",\"len\":{d},\"msg_name\":\"{s}\",\"msg_id\":{d},\"target_id\":{d},\"tier_src\":{d},\"tier_dst\":{d}}}}}",
+                    .{
+                        rec.timestamp_ns / 1000,
+                        pid,
+                        rec.source_id,
+                        event_name,
+                        rec.ipc_sequence,
+                        src_name,
+                        dst_name,
+                        rec.payload_len,
+                        msg_name,
+                        rec.msg_type,
+                        rec.target_id,
+                        rec.source_tier,
+                        rec.target_tier,
+                    },
+                ) catch continue
+            else
+                std.fmt.bufPrint(
+                    &buf,
+                    "  {{\"ph\":\"i\",\"s\":\"p\",\"ts\":{d},\"pid\":{d},\"tid\":{d},\"name\":\"{s}\",\"args\":{{\"seq\":{d},\"src\":\"{s}\",\"dst\":\"{s}\",\"len\":{d},\"msg_id\":{d},\"target_id\":{d},\"tier_src\":{d},\"tier_dst\":{d}}}}}",
+                    .{
+                        rec.timestamp_ns / 1000,
+                        pid,
+                        rec.source_id,
+                        event_name,
+                        rec.ipc_sequence,
+                        src_name,
+                        dst_name,
+                        rec.payload_len,
+                        rec.msg_type,
+                        rec.target_id,
+                        rec.source_tier,
+                        rec.target_tier,
+                    },
+                ) catch continue;
 
             writeAll.write(fd, line, &offset);
         }
@@ -184,18 +226,48 @@ fn drainToStderr(tr: *trace.TraceRing) void {
         tr.tail.store(tail + 1, .release);
 
         var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(
-            &buf,
-            "[hajr/trace] ts={d} event={s} src={s} dst={s} seq={d} len={d}\n",
-            .{
-                rec.timestamp_ns,
-                eventKindName(rec.event_kind),
-                processKindName(rec.source_proc),
-                processKindName(rec.target_proc),
-                rec.ipc_sequence,
-                rec.payload_len,
-            },
-        ) catch continue;
+        const msg_name_opt = trace.getMsgName(rec.msg_type);
+        const msg = if (rec.event_kind == @intFromEnum(trace.TraceEventKind.policy_event))
+            std.fmt.bufPrint(
+                &buf,
+                "[hajr/trace] ts={d} event=policy_event req={d} action={d} reason={d} proc={s}\n",
+                .{
+                    rec.timestamp_ns,
+                    rec.source_id,
+                    rec.payload_len,
+                    rec.msg_type,
+                    processKindName(rec.source_proc),
+                },
+            ) catch continue
+        else if (msg_name_opt) |msg_name|
+            std.fmt.bufPrint(
+                &buf,
+                "[hajr/trace] ts={d} event={s} src={s} dst={s} seq={d} len={d} msg={s}({d})\n",
+                .{
+                    rec.timestamp_ns,
+                    eventKindName(rec.event_kind),
+                    processKindName(rec.source_proc),
+                    processKindName(rec.target_proc),
+                    rec.ipc_sequence,
+                    rec.payload_len,
+                    msg_name,
+                    rec.msg_type,
+                },
+            ) catch continue
+        else
+            std.fmt.bufPrint(
+                &buf,
+                "[hajr/trace] ts={d} event={s} src={s} dst={s} seq={d} len={d} msg_id={d}\n",
+                .{
+                    rec.timestamp_ns,
+                    eventKindName(rec.event_kind),
+                    processKindName(rec.source_proc),
+                    processKindName(rec.target_proc),
+                    rec.ipc_sequence,
+                    rec.payload_len,
+                    rec.msg_type,
+                },
+            ) catch continue;
 
         _ = posix_io.fileWrite(stderr, msg, offset) catch 0;
         offset = 0;

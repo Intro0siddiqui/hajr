@@ -118,3 +118,76 @@ test "Exit Strategy: SandboxMemory Cleanup" {
     const final_mask = hw.compartment.global_allocator.used_mask;
     try std.testing.expectEqual(initial_mask, final_mask);
 }
+
+test "Trace Ring: hajr_trace_ipc_msg and hajr_trace_policy_event" {
+    const trace = @import("../trace/trace.zig");
+    const bindings = @import("../sandbox/bindings.zig");
+
+    const allocator = std.testing.allocator;
+    var tr = try allocator.create(trace.TraceRing);
+    defer allocator.destroy(tr);
+
+    tr.* = .{
+        .slots = undefined,
+        .head = std.atomic.Value(u64).init(0),
+        .tail = std.atomic.Value(u64).init(0),
+        .dropped = std.atomic.Value(u64).init(0),
+    };
+    for (&tr.slots) |*s| s.* = .{
+        .timestamp_ns = 0,
+        .source_id = 0,
+        .target_id = 0,
+        .ipc_sequence = 0,
+        .payload_len = 0,
+        .msg_type = 0,
+        .event_kind = 0,
+        .source_proc = 0,
+        .target_proc = 0,
+        .was_dropped = 0,
+        .source_tier = 0,
+        .target_tier = 0,
+        .occupied = 0,
+    };
+
+    const prev_tr = trace.global.swap(tr, .acq_rel);
+    defer trace.global.store(prev_tr, .release);
+
+    // Register message name
+    bindings.hajr_trace_register_msg(42, "WebPage_LoadURL");
+    const name42 = trace.getMsgName(42);
+    try std.testing.expect(name42 != null);
+    try std.testing.expectEqualStrings("WebPage_LoadURL", name42.?);
+
+    // Call hajr_trace_ipc_msg (send)
+    bindings.hajr_trace_ipc_msg(42, 1001, 256, 0);
+
+    const head1 = tr.head.load(.acquire);
+    try std.testing.expectEqual(@as(u64, 1), head1);
+    const rec1 = tr.slots[0];
+    try std.testing.expectEqual(@as(u32, 42), rec1.msg_type);
+    try std.testing.expectEqual(@as(u64, 1001), rec1.target_id);
+    try std.testing.expectEqual(@as(u32, 256), rec1.payload_len);
+    try std.testing.expectEqual(@intFromEnum(trace.TraceEventKind.ipc_send), rec1.event_kind);
+
+    // Call hajr_trace_ipc_msg (recv)
+    bindings.hajr_trace_ipc_msg(43, 1002, 512, 1);
+
+    const head2 = tr.head.load(.acquire);
+    try std.testing.expectEqual(@as(u64, 2), head2);
+    const rec2 = tr.slots[1];
+    try std.testing.expectEqual(@as(u32, 43), rec2.msg_type);
+    try std.testing.expectEqual(@as(u64, 1002), rec2.target_id);
+    try std.testing.expectEqual(@as(u32, 512), rec2.payload_len);
+    try std.testing.expectEqual(@intFromEnum(trace.TraceEventKind.ipc_recv), rec2.event_kind);
+
+    // Call hajr_trace_policy_event
+    bindings.hajr_trace_policy_event(9999, 2, 3);
+
+    const head3 = tr.head.load(.acquire);
+    try std.testing.expectEqual(@as(u64, 3), head3);
+    const rec3 = tr.slots[2];
+    try std.testing.expectEqual(@as(u64, 9999), rec3.source_id);
+    try std.testing.expectEqual(@as(u32, 2), rec3.payload_len); // action
+    try std.testing.expectEqual(@as(u32, 3), rec3.msg_type);    // reason_code
+    try std.testing.expectEqual(@intFromEnum(trace.TraceEventKind.policy_event), rec3.event_kind);
+}
