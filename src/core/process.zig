@@ -227,7 +227,11 @@ pub fn spawnCompartment(
             }
 
             // 4. Exec the process (with inherited environment)
-            _ = std.os.linux.syscall3(.execve, @intFromPtr(path_z.ptr), @intFromPtr(c_argv.ptr), @intFromPtr(envp));
+            const res_exec = std.os.linux.syscall3(.execve, @intFromPtr(path_z.ptr), @intFromPtr(c_argv.ptr), @intFromPtr(envp));
+            const exec_err = std.os.linux.errno(res_exec);
+            var err_buf: [128]u8 = undefined;
+            const err_str = std.fmt.bufPrint(&err_buf, "[HAJR-CHILD] FATAL: execve '{s}' failed, errno={s}\n", .{ path, @tagName(exec_err) }) catch "execve failed\n";
+            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_str.ptr), err_str.len);
             hw.os.exitProcess(1);
         } else {
             // Parent process

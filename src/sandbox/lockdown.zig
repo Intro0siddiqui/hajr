@@ -78,7 +78,14 @@ pub fn sealDebug(process_type: ProcessType) LockdownError!void {
 }
 
 export fn hajr_seal_process(process_type: u32) callconv(.c) void {
+    if (std.c.getenv("HAJR_SEAL_DISABLE") != null) return;
     const pt: ProcessType = ProcessType.fromInt(process_type);
+    if (std.c.getenv("HAJR_SEAL_DEBUG") != null) {
+        sealDebug(pt) catch |err| {
+            logSealError(pt, err);
+        };
+        return;
+    }
     seal(pt) catch |err| {
         logSealError(pt, err);
     };

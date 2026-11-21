@@ -37,17 +37,34 @@ fn processKindName(proc: u8) []const u8 {
 pub fn drainLoop(tr: *trace.TraceRing, path: [*:0]const u8) void {
     const path_slice = std.mem.span(path);
 
-    if (path_slice.len == 0) {
+    if (path_slice.len == 0 or std.mem.eql(u8, path_slice, "stderr")) {
         drainToStderr(tr);
         return;
     }
 
-    const fd = posix_io.fileOpen(path_slice) catch {
-        std.debug.print("[hajr/trace] failed to open trace file\n", .{});
+    const pid = posix_io.getpid();
+    var resolved_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var resolved_path: []const u8 = undefined;
+
+    if (std.mem.indexOf(u8, path_slice, "%d")) |idx| {
+        resolved_path = std.fmt.bufPrint(&resolved_path_buf, "{s}{d}{s}", .{ path_slice[0..idx], pid, path_slice[idx + 2..] }) catch path_slice;
+    } else {
+        if (std.mem.lastIndexOfScalar(u8, path_slice, '.')) |dot_idx| {
+            resolved_path = std.fmt.bufPrint(&resolved_path_buf, "{s}.{d}{s}", .{ path_slice[0..dot_idx], pid, path_slice[dot_idx..] }) catch path_slice;
+        } else {
+            resolved_path = std.fmt.bufPrint(&resolved_path_buf, "{s}.{d}", .{ path_slice, pid }) catch path_slice;
+        }
+    }
+
+    const fd = posix_io.fileOpen(resolved_path) catch {
+        std.debug.print("[hajr/trace] failed to open trace file: {s}\n", .{resolved_path});
         return;
     };
     posix_io.fileTruncate(fd, 0) catch {};
     defer posix_io.fileClose(fd);
+
+    const is_binary = std.mem.endsWith(u8, resolved_path, ".bin");
+    std.debug.print("[hajr/trace] Active -> {s} (pid {d}, format: {s})\n", .{ resolved_path, pid, if (is_binary) "binary" else "chrome_trace_json" });
 
     var offset: u64 = 0;
     const writeAll = struct {
@@ -61,7 +78,12 @@ pub fn drainLoop(tr: *trace.TraceRing, path: [*:0]const u8) void {
         }
     };
 
-    writeAll.write(fd, "[\n", &offset);
+    if (is_binary) {
+        const header = "HAJR_TRACE\x01\x00\x00\x00\x00\x00";
+        writeAll.write(fd, header, &offset);
+    } else {
+        writeAll.write(fd, "[\n", &offset);
+    }
 
     var first: bool = true;
     var idle_count: u32 = 0;
@@ -72,11 +94,16 @@ pub fn drainLoop(tr: *trace.TraceRing, path: [*:0]const u8) void {
 
         if (tail == head) {
             idle_count += 1;
-            const ns: u64 = if (idle_count > 1000) 1_000_000 else 100_000;
+            const ns: u64 = if (idle_count > 100) 500_000 else 10_000;
             posix_io.sleepNs(ns);
             continue;
         }
         idle_count = 0;
+
+        const dropped = tr.dropped.swap(0, .acq_rel);
+        if (dropped > 0) {
+            std.debug.print("[hajr/trace] NOTE: drained ring, {} events dropped under burst\n", .{dropped});
+        }
 
         const idx = tail % trace.TRACE_SLOTS;
         const slot = &tr.slots[idx];
@@ -91,31 +118,38 @@ pub fn drainLoop(tr: *trace.TraceRing, path: [*:0]const u8) void {
         @atomicStore(u8, &slot.occupied, 0, .release);
         tr.tail.store(tail + 1, .release);
 
-        if (!first) {
-            writeAll.write(fd, ",\n", &offset);
+        if (is_binary) {
+            const raw_rec_bytes = std.mem.asBytes(&rec);
+            writeAll.write(fd, raw_rec_bytes, &offset);
+        } else {
+            if (!first) {
+                writeAll.write(fd, ",\n", &offset);
+            }
+            first = false;
+
+            var buf: [512]u8 = undefined;
+            const event_name = eventKindName(rec.event_kind);
+            const src_name = processKindName(rec.source_proc);
+            const dst_name = processKindName(rec.target_proc);
+            const line = std.fmt.bufPrint(
+                &buf,
+                "  {{\"ph\":\"i\",\"s\":\"p\",\"ts\":{d},\"pid\":{d},\"tid\":{d},\"name\":\"{s}\",\"args\":{{\"seq\":{d},\"src\":\"{s}\",\"dst\":\"{s}\",\"len\":{d},\"tier_src\":{d},\"tier_dst\":{d}}}}}",
+                .{
+                    rec.timestamp_ns / 1000,
+                    pid,
+                    rec.source_id,
+                    event_name,
+                    rec.ipc_sequence,
+                    src_name,
+                    dst_name,
+                    rec.payload_len,
+                    rec.source_tier,
+                    rec.target_tier,
+                },
+            ) catch continue;
+
+            writeAll.write(fd, line, &offset);
         }
-        first = false;
-
-        var buf: [256]u8 = undefined;
-        const event_name = eventKindName(rec.event_kind);
-        const src_name = processKindName(rec.source_proc);
-        const dst_name = processKindName(rec.target_proc);
-        const line = std.fmt.bufPrint(
-            &buf,
-            "  {{\"ph\":\"i\",\"ts\":{d},\"name\":\"{s}\",\"args\":{{\"seq\":{d},\"src\":\"{s}\",\"dst\":\"{s}\",\"len\":{d},\"tier_src\":{d},\"tier_dst\":{d}}}}}",
-            .{
-                rec.timestamp_ns / 1000,
-                event_name,
-                rec.ipc_sequence,
-                src_name,
-                dst_name,
-                rec.payload_len,
-                rec.source_tier,
-                rec.target_tier,
-            },
-        ) catch continue;
-
-        writeAll.write(fd, line, &offset);
     }
 }
 

@@ -40,3 +40,32 @@ This file documents the specialized sub-agents and their roles for the Hajr proj
 *   **Research**: Use `codebase_investigator`.
 *   **Execution**: Use `generalist` for batch changes or targeted refactors.
 *   **Validation**: Use CLI standard tools (e.g., `zig build test`) to confirm results post-execution.
+
+---
+
+## 🛰️ Lock-Free Trace Subsystem Architecture
+
+1.  **FFI Hooking**:
+    *   `hajr_trace_init()` and `hajr_trace_set_process_kind(kind)` are exported by `libhajr_ffi.so`.
+    *   `trace.init(allocator)` sets up the global trace ring and spawns the background `drainLoop` consumer thread.
+2.  **Direct Ring Hooking**:
+    *   `hajr_ring_write` (`.ring_send`, `.ring_full`), `hajr_ring_read` (`.ring_recv`), and `__zawra_ring_read` (`.ffi_ring_read`) record asynchronously to the lock-free trace ring with zero stdout/stderr stalling.
+    *   Zero-byte idle polling loops in `hajr_ring_read` bypass trace recording to prevent ring saturation.
+3.  **Dual Output Formats**:
+    *   `.bin`: Writes raw 64-byte `TraceRecord` binaries prefixed by a 16-byte `HAJR_TRACE\x01...` magic header for compact low-overhead offline analysis.
+    *   `.json`: Writes Chrome Trace Event format (Perfetto-compatible) JSON containing `ph`, `ts`, `pid`, `tid`, `name`, `seq`, `src`, `dst`, `tier_src`, `tier_dst`, and `len`.
+4.  **PID Disambiguation**:
+    *   Multi-process environments automatically format trace filenames (`<name>.<pid>.bin` / `<name>.<pid>.json` or custom `%d`) so concurrent processes (`UIProcess`, `WebProcess`, `NetworkProcess`, `GPUProcess`) do not truncate or clobber each other.
+
+---
+
+## ⚡ Signal & Sandbox Boundary Pitfalls
+
+1.  **Eventfd Fallback**:
+    *   `__hajr_map_anonymous_ring_ex` automatically creates a non-blocking `eventfd` if `signal_fd == -1`, ensuring valid IPC signaling endpoints across namespace boundaries.
+2.  **MPK Signal Trap Warning**:
+    *   Signal handlers on Linux testing Intel MPK (`WRPKRU`) will enter an infinite signal loop on `sigreturn` unless the `ucontext_t` PKRU state is modified or access rights are explicitly restored before returning from the handler.
+3.  **Seccomp Pre-Flight & `HAJR_SEAL_DEBUG`**:
+    *   **Silent Death Avoidance**: When debugging child processes, always run with `HAJR_SEAL_DEBUG=1`. This switches Seccomp action from `SECCOMP_RET_KILL_PROCESS` (`SIGSYS`) to `SECCOMP_RET_LOG`, recording the exact violating syscall number to `dmesg` without terminating the process.
+    *   **Landlock-Before-Seccomp Ordering**: In `os_abstraction.zig`, Landlock ruleset creation (`landlock_create_ruleset`, syscall 444) and ruleset application (`landlock_restrict_self`, syscall 446) must ALWAYS execute *before* `seccomp.install()`. Installing Seccomp first blocks Landlock setup with `SIGSYS` unless syscalls 444–446 are explicitly whitelisted.
+    *   **Mandatory GLib Syscall Whitelist**: Linux multi-threaded GLib event loops require `SYS_POLL` (7), `SYS_PPOLL` (271), `SYS_FSYNC` (74), `SYS_FDATASYNC` (75), and `SYS_MEMFD_CREATE` (319). Never seal auxiliary processes without whitelisting these syscalls.

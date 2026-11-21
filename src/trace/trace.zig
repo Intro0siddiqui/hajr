@@ -47,8 +47,8 @@ comptime {
     std.debug.assert(@sizeOf(TraceRecord) == 64);
 }
 
-pub const TRACE_SLOTS: usize = 1024;
-pub const TRACE_BACKPRESSURE_WATERMARK: usize = TRACE_SLOTS * 3 / 4;
+pub const TRACE_SLOTS: usize = 65536;
+pub const TRACE_BACKPRESSURE_WATERMARK: usize = TRACE_SLOTS * 7 / 8;
 
 pub const TraceRing = struct {
     slots: [TRACE_SLOTS]TraceRecord,
@@ -61,16 +61,30 @@ pub var global: atomic.Value(?*TraceRing) = atomic.Value(?*TraceRing).init(null)
 
 var init_once: atomic.Value(u32) = atomic.Value(u32).init(0);
 
+pub var current_process_kind: atomic.Value(u8) = atomic.Value(u8).init(@intFromEnum(ProcessKind.unknown));
+
+pub fn setProcessKind(kind: ProcessKind) void {
+    current_process_kind.store(@intFromEnum(kind), .release);
+}
+
+pub fn getProcessKind() ProcessKind {
+    return @enumFromInt(current_process_kind.load(.acquire));
+}
+
 pub fn init(allocator: std.mem.Allocator) void {
     if (init_once.swap(1, .acq_rel) != 0) return;
 
     var found_path: ?[:0]const u8 = null;
-    var i: usize = 0;
-    while (std.c.environ[i]) |env_ptr| : (i += 1) {
-        const entry = std.mem.span(env_ptr);
-        if (std.mem.startsWith(u8, entry, "HAJR_TRACE_FILE=")) {
-            found_path = entry["HAJR_TRACE_FILE=".len..];
-            break;
+    if (std.c.getenv("HAJR_TRACE_FILE")) |env_val| {
+        found_path = std.mem.span(env_val);
+    } else {
+        var i: usize = 0;
+        while (std.c.environ[i]) |env_ptr| : (i += 1) {
+            const entry = std.mem.span(env_ptr);
+            if (std.mem.startsWith(u8, entry, "HAJR_TRACE_FILE=")) {
+                found_path = entry["HAJR_TRACE_FILE=".len..];
+                break;
+            }
         }
     }
     const path = found_path orelse return;
@@ -116,7 +130,6 @@ pub fn recordFfi(
     const used = head -% tr.tail.load(.acquire);
     if (used >= TRACE_BACKPRESSURE_WATERMARK) {
         _ = tr.dropped.fetchAdd(1, .acq_rel);
-        std.debug.print("[hajr/trace] WARNING: trace ring at {}% capacity, dropping event\n", .{used * 100 / TRACE_SLOTS});
         return;
     }
 
@@ -140,7 +153,7 @@ pub fn recordFfi(
         .payload_len = @intCast(data_len),
         .msg_type = 0,
         .event_kind = @intFromEnum(event),
-        .source_proc = @intFromEnum(ProcessKind.unknown),
+        .source_proc = current_process_kind.load(.acquire),
         .target_proc = @intFromEnum(ProcessKind.unknown),
         .was_dropped = 0,
         .source_tier = ring_tier,
@@ -167,7 +180,6 @@ pub fn recordIpc(
     const used = head -% tr.tail.load(.acquire);
     if (used >= TRACE_BACKPRESSURE_WATERMARK) {
         _ = tr.dropped.fetchAdd(1, .acq_rel);
-        std.debug.print("[hajr/trace] WARNING: trace ring at {}% capacity, dropping event\n", .{used * 100 / TRACE_SLOTS});
         return;
     }
 

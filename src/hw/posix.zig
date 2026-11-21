@@ -84,3 +84,8 @@ pub fn sleepNs(ns: u64) void {
     var ts = posix.system.timespec{ .sec = sec, .nsec = nsec };
     _ = posix.system.nanosleep(&ts, null);
 }
+
+/// Get current process ID.
+pub fn getpid() i32 {
+    return @intCast(posix.system.getpid());
+}

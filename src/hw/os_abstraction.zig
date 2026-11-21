@@ -263,6 +263,13 @@ pub fn getMonotonicTime() f64 {
     return @as(f64, @floatFromInt(monotonicTimestamp())) / 1e9;
 }
 
+pub fn getpid() i32 {
+    if (comptime builtin.os.tag == .windows) {
+        return 0;
+    }
+    return @intCast(std.posix.system.getpid());
+}
+
 pub const SeekOrigin = enum(i32) {
     start = 0,
     current = 1,
@@ -390,6 +397,14 @@ pub fn sealProcess(process_type: ProcessType, debug: bool) LockdownError!void {
             const seccomp = @import("seccomp.zig");
             const landlock = @import("landlock.zig");
 
+            // Apply Landlock first so its ruleset creation and restrictions occur before Seccomp BPF filters engage
+            const rules = switch (process_type) {
+                .web => web_landlock_rules,
+                .network => network_landlock_rules,
+                .gpu => gpu_landlock_rules,
+            };
+            try landlock.denyWithExceptions(rules);
+
             const filter_kind: seccomp.FilterKind = if (debug) switch (process_type) {
                 .web => .web_process_debug,
                 .network => .network_process_debug,
@@ -400,13 +415,6 @@ pub fn sealProcess(process_type: ProcessType, debug: bool) LockdownError!void {
                 .gpu => .gpu_process,
             };
             try seccomp.install(filter_kind);
-
-            const rules = switch (process_type) {
-                .web => web_landlock_rules,
-                .network => network_landlock_rules,
-                .gpu => gpu_landlock_rules,
-            };
-            try landlock.denyWithExceptions(rules);
         },
         .macos => {
             const seatbelt = @import("seatbelt.zig");
