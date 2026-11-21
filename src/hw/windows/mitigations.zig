@@ -195,6 +195,28 @@ const TOKEN_MANDATORY_LABEL = extern struct {
 };
 const TOKEN_INFORMATION_CLASS = u32;
 
+const SID_IDENTIFIER_AUTHORITY = extern struct {
+    Value: [6]u8,
+};
+
+extern "advapi32" fn AllocateAndInitializeSid(
+    pIdentifierAuthority: *const SID_IDENTIFIER_AUTHORITY,
+    nSubAuthorityCount: u8,
+    nSubAuthority0: windows.DWORD,
+    nSubAuthority1: windows.DWORD,
+    nSubAuthority2: windows.DWORD,
+    nSubAuthority3: windows.DWORD,
+    nSubAuthority4: windows.DWORD,
+    nSubAuthority5: windows.DWORD,
+    nSubAuthority6: windows.DWORD,
+    nSubAuthority7: windows.DWORD,
+    pSid: **SID,
+) callconv(.winapi) windows.BOOL;
+
+extern "advapi32" fn FreeSid(
+    pSid: *SID,
+) callconv(.winapi) ?*anyopaque;
+
 extern "advapi32" fn OpenProcessToken(
     ProcessHandle: windows.HANDLE,
     DesiredAccess: windows.DWORD,
@@ -214,20 +236,44 @@ pub fn applyLowIntegrity() !void {
     const TOKEN_QUERY: windows.DWORD = 0x0008;
     const TOKEN_WRITE: windows.DWORD = 0x0020;
     const TokenIntegrityLevel: TOKEN_INFORMATION_CLASS = 0x19;
+    const SECURITY_MANDATORY_LOW_RID: windows.DWORD = 0x00001000;
+    const SE_GROUP_INTEGRITY: windows.DWORD = 0x00000020;
 
     var token: windows.HANDLE = undefined;
     if (OpenProcessToken(windows.current_process, TOKEN_QUERY | TOKEN_WRITE, &token) == .FALSE)
         return error.TokenOpenFailed;
     defer windows.CloseHandle(token);
 
+    const mandatory_label_auth = SID_IDENTIFIER_AUTHORITY{
+        .Value = [_]u8{ 0, 0, 0, 0, 0, 16 },
+    };
+    var low_sid: *SID = undefined;
+    if (AllocateAndInitializeSid(
+        &mandatory_label_auth,
+        1,
+        SECURITY_MANDATORY_LOW_RID,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        &low_sid,
+    ) == .FALSE) {
+        return error.MitigationPolicyFailed;
+    }
+    defer _ = FreeSid(low_sid);
+
     var tml = TOKEN_MANDATORY_LABEL{
         .Label = .{
-            .Sid = null,
-            .Attributes = 0x00000020,
+            .Sid = low_sid,
+            .Attributes = SE_GROUP_INTEGRITY,
         },
     };
 
-    _ = SetTokenInformation(token, TokenIntegrityLevel, &tml, @sizeOf(@TypeOf(tml)));
+    if (SetTokenInformation(token, TokenIntegrityLevel, &tml, @sizeOf(@TypeOf(tml))) == .FALSE)
+        return error.MitigationPolicyFailed;
 }
 
 test "mitigation flags have defaults" {

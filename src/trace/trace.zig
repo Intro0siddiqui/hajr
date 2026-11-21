@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const atomic = std.atomic;
 const hw = @import("../hw/mod.zig");
 
@@ -77,7 +78,7 @@ pub fn init(allocator: std.mem.Allocator) void {
     var found_path: ?[:0]const u8 = null;
     if (std.c.getenv("HAJR_TRACE_FILE")) |env_val| {
         found_path = std.mem.span(env_val);
-    } else {
+    } else if (builtin.os.tag != .windows) {
         var i: usize = 0;
         while (std.c.environ[i]) |env_ptr| : (i += 1) {
             const entry = std.mem.span(env_ptr);

@@ -1,8 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const hw = @import("../hw/mod.zig");
 const trace = @import("trace.zig");
 
 const posix_io = hw.posix_io;
+const windows = hw.windows;
 
 const ProcessKind = trace.ProcessKind;
 
@@ -154,7 +156,10 @@ pub fn drainLoop(tr: *trace.TraceRing, path: [*:0]const u8) void {
 }
 
 fn drainToStderr(tr: *trace.TraceRing) void {
-    const stderr: std.posix.fd_t = 2;
+    const stderr: hw.os.OsHandle = if (builtin.os.tag == .windows)
+        windows.GetStdHandle(windows.STD_ERROR_HANDLE)
+    else
+        2;
     var offset: u64 = 0;
 
     while (true) {

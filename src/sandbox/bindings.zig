@@ -10,6 +10,66 @@ comptime {
     _ = lockdown;
 }
 
+const win32 = if (builtin.os.tag == .windows) struct {
+    pub const INVALID_HANDLE_VALUE: ?*anyopaque = @ptrFromInt(std.math.maxInt(usize));
+    pub const PAGE_READWRITE: u32 = 0x00000004;
+    pub const FILE_MAP_WRITE: u32 = 0x0002;
+    pub const FILE_MAP_READ: u32 = 0x0004;
+
+    pub extern "kernel32" fn CreateFileMappingW(
+        hFile: ?*anyopaque,
+        lpFileMappingAttributes: ?*anyopaque,
+        flProtect: u32,
+        dwMaximumSizeHigh: u32,
+        dwMaximumSizeLow: u32,
+        lpName: ?[*:0]const u16,
+    ) callconv(.winapi) ?*anyopaque;
+
+    pub extern "kernel32" fn MapViewOfFile(
+        hFileMappingObject: ?*anyopaque,
+        dwDesiredAccess: u32,
+        dwFileOffsetHigh: u32,
+        dwFileOffsetLow: u32,
+        dwNumberOfBytesToMap: usize,
+    ) callconv(.winapi) ?*anyopaque;
+
+    pub extern "kernel32" fn UnmapViewOfFile(
+        lpBaseAddress: ?*const anyopaque,
+    ) callconv(.winapi) i32;
+
+    pub extern "kernel32" fn CreateEventW(
+        lpEventAttributes: ?*anyopaque,
+        bManualReset: i32,
+        bInitialState: i32,
+        lpName: ?[*:0]const u16,
+    ) callconv(.winapi) ?*anyopaque;
+
+    pub extern "kernel32" fn SetEvent(
+        hEvent: ?*anyopaque,
+    ) callconv(.winapi) i32;
+
+    pub extern "kernel32" fn ResetEvent(
+        hEvent: ?*anyopaque,
+    ) callconv(.winapi) i32;
+
+    pub const MEMORY_BASIC_INFORMATION = extern struct {
+        BaseAddress: ?*anyopaque,
+        AllocationBase: ?*anyopaque,
+        AllocationProtect: u32,
+        PartitionId: u16,
+        RegionSize: usize,
+        State: u32,
+        Protect: u32,
+        Type: u32,
+    };
+
+    pub extern "kernel32" fn VirtualQuery(
+        lpAddress: ?*const anyopaque,
+        lpBuffer: *MEMORY_BASIC_INFORMATION,
+        dwLength: usize,
+    ) callconv(.winapi) usize;
+} else struct {};
+
 // ============================================================================
 // Trace Subsystem FFI Exports
 // ============================================================================
@@ -145,6 +205,10 @@ export fn hajr_ring_init(
         if (rc == 0) {
             s_fd = fds[0];
         }
+    } else if (comptime builtin.os.tag == .windows) {
+        if (win32.CreateEventW(null, 0, 0, null)) |ev| {
+            s_fd = @bitCast(@as(u32, @truncate(@intFromPtr(ev))));
+        }
     }
 
     c_ring.* = .{
@@ -205,6 +269,8 @@ export fn hajr_ring_free(c_ring: ?*C_HardenedRingBuffer) callconv(.c) void {
         if (r.signal_fd != -1) {
             if (comptime builtin.os.tag != .windows) {
                 _ = std.posix.system.close(r.signal_fd);
+            } else {
+                _ = CloseHandle(@ptrFromInt(@as(usize, @as(u32, @bitCast(r.signal_fd)))));
             }
         }
         std.heap.c_allocator.destroy(r);
@@ -314,6 +380,9 @@ export fn hajr_ring_signal(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
             const val: u8 = 1;
             const rc = std.posix.system.write(ring.signal_fd, @ptrCast(&val), 1);
             return if (rc >= 0) 1 else -1;
+        } else if (comptime builtin.os.tag == .windows) {
+            const handle: ?*anyopaque = @ptrFromInt(@as(usize, @as(u32, @bitCast(ring.signal_fd))));
+            return if (win32.SetEvent(handle) != 0) 1 else -1;
         }
     }
     const meta = ring.metadata_ptr;
@@ -333,6 +402,11 @@ export fn hajr_ring_wait(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
             var val: u8 = 0;
             const rc = std.posix.system.read(ring.signal_fd, @ptrCast(&val), 1);
             return if (rc >= 0) 1 else -1;
+        } else if (comptime builtin.os.tag == .windows) {
+            const handle: ?*anyopaque = @ptrFromInt(@as(usize, @as(u32, @bitCast(ring.signal_fd))));
+            const wait_res = WaitForSingleObject(handle, INFINITE);
+            _ = win32.ResetEvent(handle);
+            return if (wait_res == 0) 1 else -1;
         }
     }
     const meta = ring.metadata_ptr;
@@ -492,6 +566,18 @@ export fn __hajr_create_anonymous_ring(data_size: usize) callconv(.c) u64 {
         const total_size = sandbox.RingConfig.METADATA_SIZE + data_size;
         _ = std.posix.system.ftruncate(fd, @as(i64, @intCast(total_size)));
         return @as(u64, @intCast(fd));
+    } else if (comptime builtin.os.tag == .windows) {
+        const total_size = sandbox.RingConfig.METADATA_SIZE + data_size;
+        const handle = win32.CreateFileMappingW(
+            win32.INVALID_HANDLE_VALUE,
+            null,
+            win32.PAGE_READWRITE,
+            @intCast((total_size >> 32) & 0xFFFFFFFF),
+            @intCast(total_size & 0xFFFFFFFF),
+            null,
+        );
+        if (handle == null or handle == win32.INVALID_HANDLE_VALUE) return std.math.maxInt(u64);
+        return @as(u64, @intFromPtr(handle.?));
     }
     return std.math.maxInt(u64);
 }
@@ -501,11 +587,33 @@ export fn __hajr_map_anonymous_ring(id: u64) callconv(.c) ?*anyopaque {
 }
 
 export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*anyopaque {
-    if (comptime builtin.os.tag == .windows) return null;
-
-    const fd: i32 = @intCast(id);
     var buffer_len: usize = 0;
-    if (comptime builtin.os.tag == .linux) {
+    var mmap_ptr: [*]u8 = undefined;
+
+    if (comptime builtin.os.tag == .windows) {
+        const handle: ?*anyopaque = @ptrFromInt(@as(usize, @intCast(id)));
+        const view = win32.MapViewOfFile(
+            handle,
+            win32.FILE_MAP_READ | win32.FILE_MAP_WRITE,
+            0,
+            0,
+            buffer_len,
+        ) orelse return null;
+        mmap_ptr = @ptrCast(view);
+
+        var mbi: win32.MEMORY_BASIC_INFORMATION = undefined;
+        if (win32.VirtualQuery(mmap_ptr, &mbi, @sizeOf(win32.MEMORY_BASIC_INFORMATION)) == 0) {
+            _ = win32.UnmapViewOfFile(view);
+            return null;
+        }
+        const raw_len = mbi.RegionSize;
+        const candidate_ring_size = if (raw_len > sandbox.RingConfig.METADATA_SIZE)
+            std.math.floorPowerOfTwo(usize, raw_len - sandbox.RingConfig.METADATA_SIZE)
+        else
+            0;
+        buffer_len = candidate_ring_size + sandbox.RingConfig.METADATA_SIZE;
+    } else if (comptime builtin.os.tag == .linux) {
+        const fd: i32 = @intCast(id);
         const rc = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 2); // SEEK_END
         const lseek_err = std.os.linux.errno(rc);
         {
@@ -518,30 +626,42 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
         if (lseek_err != .SUCCESS) return null;
         buffer_len = @intCast(rc);
         _ = std.os.linux.syscall3(.lseek, @as(usize, @intCast(fd)), 0, 0); // SEEK_SET
+
+        const prot = std.posix.PROT{ .READ = true, .WRITE = true };
+        const mmap_slice = std.posix.mmap(
+            null,
+            buffer_len,
+            prot,
+            std.posix.MAP{ .TYPE = .SHARED },
+            fd,
+            0,
+        ) catch |err| {
+            var diag_buf: [128]u8 = undefined;
+            const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-CHILD] DIAG: mmap failed fd={d} len={d} err={s}\n", .{ fd, buffer_len, @errorName(err) });
+            if (diag_msg) |str| {
+                _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+            } else |_| {}
+            return null;
+        };
+        mmap_ptr = mmap_slice.ptr;
     } else {
+        const fd: i32 = @intCast(id);
         const size = std.posix.system.lseek(fd, 0, 2); // SEEK_END
         if (size < 0) return null;
         buffer_len = @intCast(size);
         _ = std.posix.system.lseek(fd, 0, 0); // SEEK_SET
+
+        const prot = std.posix.PROT{ .READ = true, .WRITE = true };
+        const mmap_slice = std.posix.mmap(
+            null,
+            buffer_len,
+            prot,
+            std.posix.MAP{ .TYPE = .SHARED },
+            fd,
+            0,
+        ) catch return null;
+        mmap_ptr = mmap_slice.ptr;
     }
-    
-    const prot = std.posix.PROT{ .READ = true, .WRITE = true };
-    const mmap_slice = std.posix.mmap(
-        null,
-        buffer_len,
-        prot,
-        std.posix.MAP{ .TYPE = .SHARED },
-        fd,
-        0,
-    ) catch |err| {
-        var diag_buf: [128]u8 = undefined;
-        const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-CHILD] DIAG: mmap failed fd={d} len={d} err={s}\n", .{ fd, buffer_len, @errorName(err) });
-        if (diag_msg) |str| {
-            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
-        } else |_| {}
-        return null;
-    };
-    const mmap_ptr: [*]u8 = mmap_slice.ptr;
     
     const ring_size = buffer_len - sandbox.RingConfig.METADATA_SIZE;
 
@@ -550,7 +670,9 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
         var diag_buf: [128]u8 = undefined;
         const diag_msg = std.fmt.bufPrint(&diag_buf, "[HAJR-CHILD] FATAL: ring_size={d} is not power-of-two!\n", .{ring_size});
         if (diag_msg) |str| {
-            _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+            if (comptime builtin.os.tag == .linux) {
+                _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
+            }
         } else |_| {}
         return null;
     }
@@ -564,6 +686,10 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
             const efd = std.os.linux.syscall2(.eventfd, 0, std.os.linux.EFD.CLOEXEC | std.os.linux.EFD.NONBLOCK);
             if (@as(isize, @bitCast(efd)) >= 0) {
                 actual_signal_fd = @intCast(efd);
+            }
+        } else if (comptime builtin.os.tag == .windows) {
+            if (win32.CreateEventW(null, 0, 0, null)) |ev| {
+                actual_signal_fd = @bitCast(@as(u32, @truncate(@intFromPtr(ev))));
             }
         }
     }

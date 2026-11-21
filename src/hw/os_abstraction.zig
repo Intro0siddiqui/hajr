@@ -439,8 +439,38 @@ pub fn sealProcess(process_type: ProcessType, debug: bool) LockdownError!void {
     }
 }
 
+pub fn sleepNs(ns: u64) void {
+    if (comptime builtin.os.tag == .windows) {
+        windows.time.sleepNs(ns);
+    } else {
+        const sec: i64 = @intCast(ns / std.time.ns_per_s);
+        const nsec: i64 = @intCast(ns % std.time.ns_per_s);
+        var ts = std.posix.system.timespec{ .sec = sec, .nsec = nsec };
+        _ = std.posix.system.nanosleep(&ts, null);
+    }
+}
+
 pub const FUTEX_WAIT_PRIVATE: u32 = 128; // FUTEX_WAIT (0) | FUTEX_PRIVATE_FLAG (128)
 pub const FUTEX_WAKE_PRIVATE: u32 = 129; // FUTEX_WAKE (1) | FUTEX_PRIVATE_FLAG (128)
+
+const win32_synch = if (builtin.os.tag == .windows) struct {
+    pub const INFINITE: std.os.windows.DWORD = 0xFFFFFFFF;
+
+    extern "api-ms-win-core-synch-l1-2-0" fn WaitOnAddress(
+        Address: *const anyopaque,
+        CompareAddress: *const anyopaque,
+        AddressSize: std.os.windows.SIZE_T,
+        dwMilliseconds: std.os.windows.DWORD,
+    ) callconv(.winapi) std.os.windows.BOOL;
+
+    extern "api-ms-win-core-synch-l1-2-0" fn WakeByAddressSingle(
+        Address: *const anyopaque,
+    ) callconv(.winapi) void;
+
+    extern "api-ms-win-core-synch-l1-2-0" fn WakeByAddressAll(
+        Address: *const anyopaque,
+    ) callconv(.winapi) void;
+} else struct {};
 
 pub fn futexWait(addr: *volatile u32, expected: u32) void {
     if (comptime builtin.os.tag == .linux) {
@@ -451,6 +481,9 @@ pub fn futexWait(addr: *volatile u32, expected: u32) void {
             expected,
             0,
         );
+    } else if (comptime builtin.os.tag == .windows) {
+        var comp = expected;
+        _ = win32_synch.WaitOnAddress(@ptrCast(@volatileCast(addr)), &comp, @sizeOf(u32), win32_synch.INFINITE);
     }
 }
 
@@ -462,6 +495,13 @@ pub fn futexWake(addr: *volatile u32, count: u32) void {
             FUTEX_WAKE_PRIVATE,
             count,
         );
+    } else if (comptime builtin.os.tag == .windows) {
+        const ptr: *const anyopaque = @ptrCast(@volatileCast(addr));
+        if (count == 1) {
+            win32_synch.WakeByAddressSingle(ptr);
+        } else {
+            win32_synch.WakeByAddressAll(ptr);
+        }
     }
 }
 
