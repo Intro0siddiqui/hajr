@@ -82,6 +82,10 @@ export fn hajr_trace_set_process_kind(kind: u8) callconv(.c) void {
     trace.setProcessKind(@enumFromInt(kind));
 }
 
+export fn hajr_trace_get_process_kind() callconv(.c) u8 {
+    return @intFromEnum(trace.getProcessKind());
+}
+
 // ============================================================================
 // JavaScriptCore Zero-Copy FFI Bindings (Task 2)
 // ============================================================================
