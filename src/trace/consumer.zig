@@ -49,17 +49,32 @@ pub fn drainLoop(tr: *trace.TraceRing, path: [*:0]const u8) void {
     }
 
     const pid = posix_io.getpid();
+    var kind = trace.getProcessKind();
+    if (kind == .unknown) {
+        var wait_spins: u8 = 0;
+        while (wait_spins < 50 and trace.getProcessKind() == .unknown) : (wait_spins += 1) {
+            posix_io.sleepNs(1_000_000);
+        }
+        kind = trace.getProcessKind();
+    }
+    const kind_tag: []const u8 = switch (kind) {
+        .ui_process => "ui",
+        .web_process => "web",
+        .net_process => "net",
+        .gpu_process => "gpu",
+        .unknown => "unknown",
+        _ => "unknown",
+    };
+
     var resolved_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     var resolved_path: []const u8 = undefined;
 
     if (std.mem.indexOf(u8, path_slice, "%d")) |idx| {
-        resolved_path = std.fmt.bufPrint(&resolved_path_buf, "{s}{d}{s}", .{ path_slice[0..idx], pid, path_slice[idx + 2..] }) catch path_slice;
+        resolved_path = std.fmt.bufPrint(&resolved_path_buf, "{s}{s}.{d}{s}", .{ path_slice[0..idx], kind_tag, pid, path_slice[idx + 2..] }) catch path_slice;
+    } else if (std.mem.lastIndexOfScalar(u8, path_slice, '.')) |dot_idx| {
+        resolved_path = std.fmt.bufPrint(&resolved_path_buf, "{s}.{s}.{d}{s}", .{ path_slice[0..dot_idx], kind_tag, pid, path_slice[dot_idx..] }) catch path_slice;
     } else {
-        if (std.mem.lastIndexOfScalar(u8, path_slice, '.')) |dot_idx| {
-            resolved_path = std.fmt.bufPrint(&resolved_path_buf, "{s}.{d}{s}", .{ path_slice[0..dot_idx], pid, path_slice[dot_idx..] }) catch path_slice;
-        } else {
-            resolved_path = std.fmt.bufPrint(&resolved_path_buf, "{s}.{d}", .{ path_slice, pid }) catch path_slice;
-        }
+        resolved_path = std.fmt.bufPrint(&resolved_path_buf, "{s}.{s}.{d}", .{ path_slice, kind_tag, pid }) catch path_slice;
     }
 
     const fd = posix_io.fileOpen(resolved_path) catch {
