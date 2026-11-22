@@ -12,6 +12,8 @@ Hajr is designed to execute across multiple operating systems and CPU architectu
 | :--- | :--- | :--- | :--- |
 | **Linux** | `x86_64` | **Hardware (Intel MPK)** | Uses protection keys via raw `wrpkru`/`rdpkru` assembly and `pkey_mprotect` syscalls. |
 | **Linux** | `aarch64` | **Hardware (ARM MTE)** | Uses memory tagging via `stg` instructions and Linux-specific MTE socket options/permissions. |
+| **Android** | `aarch64` | **Conditional MTE / mprotect** | MTE only when `AT_HWCAP2 & HWCAP2_MTE` and `PR_GET_TAGGED_ADDR_CTRL` both permit it; otherwise page-level `mprotect`. App sandbox (SELinux/isolatedProcess) is the enforcement boundary. |
+| **Android** | `x86_64` | **Software Fallback** | No MPK/MTE on the Android emulator target; page-level `mprotect` isolation. |
 | **Windows** | `x86_64` | **Software Fallback** | Uses `VirtualAlloc`/`VirtualProtect` for page-level guards and Vectored Exception Handling (VEH) for fault recovery. |
 | **macOS** | `x86_64` | **Software Fallback** | Uses POSIX `mmap`/`mprotect` for page-level guards and `sigaction` handlers for fault recovery. |
 | **macOS** | `aarch64` | **Software Fallback** | Uses POSIX `mmap`/`mprotect` with dynamic `std.heap.page_size_min` (16KB page alignment) and `sigaction` handlers. |
@@ -25,7 +27,13 @@ On Linux systems with compatible CPUs, Hajr enforces sub-process memory compartm
 * **Intel MPK**: Compartments are assigned keys `0-15`. Access permissions are modified instantly by updating the thread's `PKRU` register via assembly.
 * **ARM MTE**: Memory is tagged at 16-byte granules. Pointers hold tags in bits `[59:56]`. Faults are thrown immediately if a tagged pointer attempts to access mismatched memory.
 
-### B. Software Fallback (Windows & macOS)
+On Android, Hajr never installs its own syscall/filesystem policy: `sealProcess()`
+returns `error.UnsupportedPlatform` (logged by the C FFI) and `isSealed()` stays
+false. Multi-process isolation uses `isolatedProcess` Services; rings are attached
+with `hajr_ring_map_with_signal()` using FDs passed via Binder/SCM_RIGHTS.
+`pidfd_getfd` is disabled because SELinux blocks it.
+
+### B. Software Fallback (Windows, macOS & Android)
 On platforms where user-space hardware protection is unavailable or restricted by the OS:
 * **Memory Protection**: Fallback code relies on standard OS page permissions (`PAGE_NOACCESS`, `PAGE_READONLY`, `PAGE_READWRITE`).
 * **Compartment Isolation**: Tiers are kept separate using page-level protection changes.
@@ -57,7 +65,7 @@ These definitions prevent compile-time symbol resolution failures and keep cross
 
 Memory allocation and guard boundaries must be mapped onto hardware page boundaries.
 > [!IMPORTANT]
-> Apple Silicon macOS utilizes **16KB page sizes**, whereas Linux and Windows x86_64 target **4KB page sizes**. 
+> Apple Silicon macOS utilizes **16KB page sizes**, whereas Linux, Android and Windows x86_64 target **4KB page sizes**.
 
 ### Rules:
 1. **Never Hardcode Alignments**: Never write `align(4096)`. Always use `align(std.heap.page_size_min)`.
@@ -67,6 +75,11 @@ Memory allocation and guard boundaries must be mapped onto hardware page boundar
 ---
 
 ## 5. Libc Strategy
+
+On Android, Zig does not provide Bionic: cross-builds need an NDK sysroot and a
+libc config generated with `zig libc` (see `README.md`). Only the libraries are
+built for Android; the host-only executables are skipped because the NDK has no
+static `libc.a`.
 
 Hajr's library and FFI shared library targets do not link libc.
 However, test binaries **do link libc** (`link_libc` is enabled on the test step in `build.zig`) because `std.c.mprotect` is used for guard page probing — `std.posix.system.mprotect` does not exist in Zig 0.16's POSIX wrapper.

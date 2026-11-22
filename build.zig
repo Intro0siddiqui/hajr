@@ -5,6 +5,12 @@ pub fn build(b: *Build) void {
     const target = b.standardTargetOptions(.{ .default_target = .{ .cpu_model = .native } });
     const optimize = b.standardOptimizeOption(.{});
 
+    // Zig does not ship Bionic. Android cross-builds must supply a libc config
+    // (`--libc <file>`, generated with `zig libc` from an NDK sysroot). Only the
+    // libraries are built for Android: the host-only executables (example, test,
+    // benchmark) cannot link against Bionic without its static libc.a.
+    const is_android = target.result.abi.isAndroid();
+
     // Link PKRU C implementation only on x86_64 (Intel MPK)
     // Create this before modules so we can link it to any module that needs it
     const pkru_link: ?Build.Module.LinkObject = if (target.result.cpu.arch == .x86_64) blk: {
@@ -78,33 +84,36 @@ pub fn build(b: *Build) void {
     });
     b.installArtifact(ffi_static_lib);
 
-    // Examples
-    const example = b.addExecutable(.{
-        .name = "simple_sandbox",
-        .root_module = example_mod,
-    });
-    b.installArtifact(example);
-
-    // Build tests - uses hajr_mod which already has pkru_link added above
-    const tests = b.addTest(.{
-        .root_module = hajr_mod,
-    });
     const test_step = b.step("test", "Run all tests");
-    test_step.dependOn(&b.addRunArtifact(tests).step);
-
-    // Benchmark
-    const benchmark = b.addExecutable(.{
-        .name = "benchmark",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tests/benchmark.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-        }),
-    });
-    benchmark.root_module.addImport("hajr", hajr_mod);
-    b.installArtifact(benchmark);
-
-    const bench_run = b.addRunArtifact(benchmark);
     const bench_step = b.step("benchmark", "Run high-precision performance benchmark");
-    bench_step.dependOn(&bench_run.step);
+
+    if (!is_android) {
+        // Host-only examples/tests/benchmarks (Bionic has no static libc.a for
+        // linking Zig executables from an NDK sysroot).
+        const example = b.addExecutable(.{
+            .name = "simple_sandbox",
+            .root_module = example_mod,
+        });
+        b.installArtifact(example);
+
+        // Build tests - uses hajr_mod which already has pkru_link added above
+        const tests = b.addTest(.{
+            .root_module = hajr_mod,
+        });
+        test_step.dependOn(&b.addRunArtifact(tests).step);
+
+        // Benchmark
+        const benchmark = b.addExecutable(.{
+            .name = "benchmark",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/tests/benchmark.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+            }),
+        });
+        benchmark.root_module.addImport("hajr", hajr_mod);
+        b.installArtifact(benchmark);
+
+        bench_step.dependOn(&b.addRunArtifact(benchmark).step);
+    }
 }

@@ -49,6 +49,7 @@ extern "C" {
 //
 // What it does on each platform:
 //   Linux:   Installs seccomp-BPF filter (KILL on deny) + Landlock FS restrictions
+//   Android: Installs nothing — logs UnsupportedPlatform; isSealed() stays false
 //   macOS:   Applies seatbelt SBPL profile
 //   Windows: Sets process mitigation policies (DEP, ASLR, win32k, etc.)
 //
@@ -169,6 +170,8 @@ void hajr_ipc_set_other_pidfd(int pidfd);
 int hajr_ipc_send_fd(HajrRing* ring, int fd);
 
 // Receive a file descriptor from IPC (via pidfd_getfd).
+// Android: always returns -1 (SELinux blocks pidfd_getfd); use FDs passed via
+// Binder/SCM_RIGHTS with hajr_ring_map_with_signal() instead.
 int hajr_ipc_recv_fd(HajrRing* ring, int handle);
 
 // ============================================================================
@@ -251,6 +254,8 @@ int hajr_ipc_verify_checksum(
 // ============================================================================
 
 // Spawn a compartment process. Returns: PID, -1 on error.
+// Android: always returns -1 (unsupported); auxiliary processes are
+// isolatedProcess Services that attach rings with hajr_ring_map_with_signal().
 int hajr_spawn_compartment(
     const char* path,
     const char* const* argv,
@@ -329,6 +334,10 @@ code. If sealing fails, the function:
 1. Logs the error to stderr: `hajr: [LOCKDOWN FAILED] process_type=web error=SeccompFailed`
 2. Returns without sealing — the process continues unsealed
 
+On Android the failure is expected: no Seccomp/Landlock policy is installed, the
+FFI logs `error=UnsupportedPlatform`, and `isSealed()` returns false. The app's
+SELinux/isolatedProcess boundary is the enforcement mechanism.
+
 To detect failure programmatically, use the Zig `seal()` function directly (if
 linking statically):
 
@@ -395,6 +404,19 @@ hajr_ring_write(ring, (const unsigned char*)msg, 14);
 - `PR_SET_NO_NEW_PRIVS` is set to prevent privilege escalation
 - Landlock is applied **after** seccomp — paths that don't exist are silently skipped
 - The `openat` syscall used by Landlock path setup is in the seccomp allowlist
+
+### Android (API 29+)
+
+- No Hajr policy is installed: `hajr_seal_process*` logs `error=UnsupportedPlatform`
+  and `isSealed()` stays false. Do not install desktop Seccomp filters over
+  Bionic/Binder.
+- Multi-process isolation uses `isolatedProcess` Services; pass ring/eventfd FDs
+  via Binder/SCM_RIGHTS and attach them with `hajr_ring_map_with_signal()`.
+- `hajr_spawn_compartment()` and `hajr_ipc_recv_fd()` return `-1`.
+- AArch64 MTE is used only when both `AT_HWCAP2`/`HWCAP2_MTE` and
+  `PR_GET_TAGGED_ADDR_CTRL` permit it; otherwise page-level `mprotect` is used.
+- `HAJR_TRACE_FILE`, if used, must point into an app-writable directory.
+- Cross-build requires an NDK sysroot + `zig libc` config (see `README.md`).
 
 ### macOS
 

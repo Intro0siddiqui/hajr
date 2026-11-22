@@ -70,6 +70,61 @@ const win32 = if (builtin.os.tag == .windows) struct {
     ) callconv(.winapi) usize;
 } else struct {};
 
+const darwin = if (builtin.os.tag == .macos) struct {
+    extern "c" fn socket(domain: c_int, sock_type: c_int, protocol: c_int) callconv(.c) c_int;
+    extern "c" fn bind(sockfd: c_int, addr: *const anyopaque, addrlen: u32) callconv(.c) c_int;
+    extern "c" fn connect(sockfd: c_int, addr: *const anyopaque, addrlen: u32) callconv(.c) c_int;
+    extern "c" fn close(fd: c_int) callconv(.c) c_int;
+    extern "c" fn unlink(path: [*:0]const u8) callconv(.c) c_int;
+    extern "c" fn fcntl(fd: c_int, cmd: c_int, ...) callconv(.c) c_int;
+    extern "c" fn shm_open(name: [*:0]const u8, oflag: c_int, mode: c_uint) callconv(.c) c_int;
+    extern "c" fn shm_unlink(name: [*:0]const u8) callconv(.c) c_int;
+    extern "c" fn ftruncate(fd: c_int, length: i64) callconv(.c) c_int;
+} else struct {};
+
+var darwin_ring_counter = std.atomic.Value(u32).init(1);
+
+fn createDarwinSelfSignalingSocket() i32 {
+    if (comptime builtin.os.tag != .macos) return -1;
+    const AF_UNIX: c_int = 1;
+    const SOCK_DGRAM: c_int = 2;
+    const F_SETFL: c_int = 4;
+    const O_NONBLOCK: c_int = 0x0004;
+
+    const sock = darwin.socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (sock < 0) return -1;
+
+    const pid = std.posix.system.getpid();
+    const count = darwin_ring_counter.fetchAdd(1, .monotonic);
+
+    var sun = std.posix.sockaddr.un{
+        .family = @intCast(AF_UNIX),
+        .path = undefined,
+    };
+    @memset(&sun.path, 0);
+    const path_str = std.fmt.bufPrint(&sun.path, "/tmp/hajr-sig-{d}-{d}.sock", .{ pid, count }) catch {
+        _ = darwin.close(sock);
+        return -1;
+    };
+    sun.path[path_str.len] = 0;
+    const sun_len: u32 = @intCast(@sizeOf(std.posix.sa_family_t) + path_str.len + 1);
+
+    if (darwin.bind(sock, @ptrCast(&sun), sun_len) != 0) {
+        _ = darwin.close(sock);
+        return -1;
+    }
+    if (darwin.connect(sock, @ptrCast(&sun), sun_len) != 0) {
+        _ = darwin.unlink(@as([*:0]const u8, @ptrCast(&sun.path)));
+        _ = darwin.close(sock);
+        return -1;
+    }
+    _ = darwin.unlink(@as([*:0]const u8, @ptrCast(&sun.path)));
+
+    _ = darwin.fcntl(sock, F_SETFL, O_NONBLOCK);
+
+    return sock;
+}
+
 // ============================================================================
 // Trace Subsystem FFI Exports
 // ============================================================================
@@ -236,16 +291,9 @@ export fn hajr_ring_init(
 
     var s_fd: i32 = -1;
     if (comptime builtin.os.tag == .linux) {
-        const res = std.os.linux.syscall2(.eventfd, 0, std.os.linux.EFD.CLOEXEC | std.os.linux.EFD.NONBLOCK);
-        if (std.os.linux.errno(res) == .SUCCESS) {
-            s_fd = @intCast(res);
-        }
+        s_fd = hw.os.eventfdCreate(std.os.linux.EFD.CLOEXEC | std.os.linux.EFD.NONBLOCK) catch -1;
     } else if (comptime builtin.os.tag == .macos) {
-        var fds: [2]i32 = undefined;
-        const rc = std.posix.system.pipe(&fds);
-        if (rc == 0) {
-            s_fd = fds[0];
-        }
+        s_fd = createDarwinSelfSignalingSocket();
     } else if (comptime builtin.os.tag == .windows) {
         if (win32.CreateEventW(null, 0, 0, null)) |ev| {
             s_fd = @bitCast(@as(u32, @truncate(@intFromPtr(ev))));
@@ -483,7 +531,10 @@ export fn hajr_ipc_send_fd(c_ring: ?*C_HardenedRingBuffer, fd: i32) callconv(.c)
 /// Uses pidfd_getfd to pull the FD from the other process.
 export fn hajr_ipc_recv_fd(c_ring: ?*C_HardenedRingBuffer, handle: i32) callconv(.c) i32 {
     _ = c_ring;
-    if (comptime builtin.os.tag == .linux) {
+    // pidfd_getfd is blocked by Android's SELinux policy. On Android FDs must be
+    // passed explicitly (Binder/SCM_RIGHTS) and mapped with
+    // hajr_ring_map_with_signal, so report unsupported.
+    if (comptime builtin.os.tag == .linux and !hw.os.isAndroid()) {
         if (g_other_pidfd == -1) return -1;
         const res = std.os.linux.syscall3(.pidfd_getfd, @as(usize, @intCast(g_other_pidfd)), @as(usize, @intCast(handle)), 0);
         if (std.os.linux.errno(res) == .SUCCESS) {
@@ -598,14 +649,20 @@ export fn __hajr_create_anonymous_ring(data_size: usize) callconv(.c) u64 {
         _ = std.os.linux.syscall2(.ftruncate, @as(usize, @intCast(fd)), total_size);
         return @as(u64, @intCast(fd));
     } else if (comptime builtin.os.tag == .macos) {
-        const name = "/hajr-ring-m2-shm"; 
-        const oflag = std.posix.O{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = true };
-        const fd = std.posix.system.open(name, oflag, @as(u32, 0o600));
-        if (fd < 0) {
-            return @intCast(std.posix.system.open(name, std.posix.O{ .ACCMODE = .RDWR }, @as(u32, 0)));
-        }
+        const pid = std.posix.system.getpid();
+        const count = darwin_ring_counter.fetchAdd(1, .monotonic);
+        var name_buf: [64:0]u8 = undefined;
+        const name_slice = std.fmt.bufPrintZ(&name_buf, "/hajr-shm-{d}-{d}", .{ pid, count }) catch return std.math.maxInt(u64);
+
+        const oflag: c_int = 0x0002 | 0x0200 | 0x0800; // O_RDWR | O_CREAT | O_EXCL
+        const fd = darwin.shm_open(name_slice.ptr, oflag, @as(c_uint, 0o600));
+        if (fd < 0) return std.math.maxInt(u64);
+
+        // Immediately unlink from namespace so it acts as an anonymous shared memory object.
+        _ = darwin.shm_unlink(name_slice.ptr);
+
         const total_size = sandbox.RingConfig.METADATA_SIZE + data_size;
-        _ = std.posix.system.ftruncate(fd, @as(i64, @intCast(total_size)));
+        _ = darwin.ftruncate(fd, @as(i64, @intCast(total_size)));
         return @as(u64, @intCast(fd));
     } else if (comptime builtin.os.tag == .windows) {
         const total_size = sandbox.RingConfig.METADATA_SIZE + data_size;
@@ -687,10 +744,15 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
         mmap_ptr = mmap_slice.ptr;
     } else {
         const fd: i32 = @intCast(id);
-        const size = std.posix.system.lseek(fd, 0, 2); // SEEK_END
-        if (size < 0) return null;
-        buffer_len = @intCast(size);
-        _ = std.posix.system.lseek(fd, 0, 0); // SEEK_SET
+        var stat_buf: std.posix.Stat = undefined;
+        if (std.posix.system.fstat(fd, &stat_buf) != 0) {
+            const size = std.posix.system.lseek(fd, 0, 2); // SEEK_END
+            if (size < 0) return null;
+            buffer_len = @intCast(size);
+            _ = std.posix.system.lseek(fd, 0, 0); // SEEK_SET
+        } else {
+            buffer_len = @intCast(stat_buf.size);
+        }
 
         const prot = std.posix.PROT{ .READ = true, .WRITE = true };
         const mmap_slice = std.posix.mmap(
@@ -718,16 +780,15 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
         return null;
     }
 
-    // When no signal_fd is provided (-1), create an eventfd for IPC signaling.
+    // When no signal_fd is provided (-1), create an eventfd/socket for IPC signaling.
     // Without this, Zawra_Hajr_CreateRingPair would return -1 for both
     // signal FDs, making the child's connection identifier invalid.
     var actual_signal_fd = signal_fd;
     if (actual_signal_fd == -1) {
         if (comptime builtin.os.tag == .linux) {
-            const efd = std.os.linux.syscall2(.eventfd, 0, std.os.linux.EFD.CLOEXEC | std.os.linux.EFD.NONBLOCK);
-            if (@as(isize, @bitCast(efd)) >= 0) {
-                actual_signal_fd = @intCast(efd);
-            }
+            actual_signal_fd = hw.os.eventfdCreate(std.os.linux.EFD.CLOEXEC | std.os.linux.EFD.NONBLOCK) catch -1;
+        } else if (comptime builtin.os.tag == .macos) {
+            actual_signal_fd = createDarwinSelfSignalingSocket();
         } else if (comptime builtin.os.tag == .windows) {
             if (win32.CreateEventW(null, 0, 0, null)) |ev| {
                 actual_signal_fd = @bitCast(@as(u32, @truncate(@intFromPtr(ev))));
@@ -821,7 +882,7 @@ export fn hajr_spawn_compartment(
     
     const pid = process.spawnCompartment(allocator, std.mem.span(path), zig_argv.items, out_socket) catch return -1;
     
-    if (comptime builtin.os.tag == .linux) {
+    if (comptime builtin.os.tag == .linux and !hw.os.isAndroid()) {
         const res = std.os.linux.syscall2(.pidfd_open, pid, 0);
         if (std.os.linux.errno(res) == .SUCCESS) {
             g_other_pidfd = @intCast(res);

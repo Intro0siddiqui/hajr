@@ -11,6 +11,13 @@ extern "System" fn sandbox_init(
     errorbuf: ?*?*u8,
 ) callconv(.c) c_int;
 
+extern "System" fn sandbox_init_with_parameters(
+    profile: [*:0]const u8,
+    flags: u64,
+    parameters: [*]const ?[*:0]const u8,
+    errorbuf: ?*?*u8,
+) callconv(.c) c_int;
+
 extern "System" fn sandbox_free_error(errorbuf: *u8) callconv(.c) void;
 
 pub const Profile = enum {
@@ -38,13 +45,39 @@ pub fn apply(profile: Profile) !void {
 }
 
 pub fn applyCustom(profile_contents: []const u8) !void {
+    const default_params = [_]?[*:0]const u8{
+        "profile_dir", "/tmp/zawra-profile",
+        "cache_dir", "/tmp/zawra-cache",
+        null,
+    };
+    try applyCustomWithParameters(profile_contents, &default_params);
+}
+
+pub fn applyCustomWithParameters(profile_contents: []const u8, parameters: []const ?[*:0]const u8) !void {
     if (builtin.os.tag != .macos) return error.UnsupportedPlatform;
 
     const null_terminated = try std.heap.page_allocator.dupeZ(u8, profile_contents);
     defer std.heap.page_allocator.free(null_terminated);
 
     var error_buf: ?*u8 = null;
-    const result = sandbox_init(@ptrCast(null_terminated), 3, &error_buf);
+    var result: c_int = -1;
+
+    if (parameters.len > 0 and parameters[0] != null) {
+        result = sandbox_init_with_parameters(@ptrCast(null_terminated), 3, parameters.ptr, &error_buf);
+        if (result != 0 and error_buf != null) {
+            sandbox_free_error(error_buf.?);
+            error_buf = null;
+            result = sandbox_init_with_parameters(@ptrCast(null_terminated), 0, parameters.ptr, &error_buf);
+        }
+    } else {
+        result = sandbox_init(@ptrCast(null_terminated), 3, &error_buf);
+        if (result != 0 and error_buf != null) {
+            sandbox_free_error(error_buf.?);
+            error_buf = null;
+            result = sandbox_init(@ptrCast(null_terminated), 0, &error_buf);
+        }
+    }
+
     if (result != 0) {
         if (error_buf) |buf| {
             sandbox_free_error(buf);

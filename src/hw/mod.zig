@@ -6,6 +6,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+// Raw MTE instructions live in the hardware layer; only import on AArch64.
+const mte = if (builtin.cpu.arch == .aarch64) @import("arch/mte.zig") else struct {};
+
 pub const pointer = @import("pointer.zig");
 pub const compartment = @import("compartment.zig");
 pub const exception = @import("exception.zig");
@@ -35,6 +38,12 @@ else if (builtin.cpu.arch == .aarch64)
     if (builtin.os.tag == .linux) AArch64_Linux else AArch64_Portable
 else
     Fallback;
+
+/// Runtime MTE capability (AT_HWCAP2 + tagged address control), delegated to the
+/// OS abstraction. False on non-AArch64 / non-Linux targets.
+pub fn detectMte() bool {
+    return os.detectMte();
+}
 
 /// Writes the hardware protection key rights (e.g., PKRU register on x86_64)
 pub fn writeProtectionKey(value: u32) void {
@@ -144,22 +153,16 @@ const X86_64_Portable = struct {
 const AArch64_Linux = struct {
     /// MTE uses pointer tagging rather than a single global register like PKRU.
     /// The TCO (Tag Check Override) register can be used to globally disable checks.
+    /// All MTE instructions are gated on runtime capability detection and fall
+    /// back to page protection (mprotect) on hardware/Android without MTE.
     pub fn writeProtectionKey(value: u32) void {
-        asm volatile (
-            \\msr tco, %[val]
-            :
-            : [val] "r" (@as(u64, value))
-            : "memory"
-        );
+        if (!os.detectMte()) return;
+        mte.writeTco(value);
     }
 
     pub fn readProtectionKey() u32 {
-        var value: u64 = undefined;
-        asm volatile (
-            \\mrs %[ret], tco
-            : [ret] "=r" (value)
-        );
-        return @as(u32, @intCast(value));
+        if (!os.detectMte()) return 0;
+        return mte.readTco();
     }
 
     pub fn setKeyPermission(key: u32, perm: Permission) void {
@@ -170,29 +173,16 @@ const AArch64_Linux = struct {
         // pointer tag stored in bits [59:56], not a global permission register.
         // This is a no-op because the caller uses the key+perm interface designed
         // for x86_64 MPK; on AArch64, permissions are set at allocation time
-        // via applyProtectionToRegion (which passes PROT_MTE to mprotect).
+        // via applyProtectionToRegion.
     }
 
     pub fn applyProtectionToRegion(ptr: [*]u8, len: usize, key: u32) !void {
-        // 1. Set standard memory protection via os layer
-        try os.memProtect(ptr, len, true, true);
-        // 2. Apply MTE tag to memory granules
-        // MTE granule is 16 bytes. The tag is stored in bits [59:56] of the pointer.
-        var addr = @intFromPtr(ptr);
-        const end_addr = addr + len;
-        const tag = @as(u64, key & 0xF) << 56;
+        if (!os.detectMte()) return Fallback.applyProtectionToRegion(ptr, len, key);
 
-        while (addr < end_addr) {
-            // Combine address with tag
-            const tagged_addr = (addr & 0x00FFFFFFFFFFFFFF) | tag;
-            asm volatile (
-                \\stg %[addr], [%[addr]]
-                :
-                : [addr] "r" (tagged_addr)
-                : "memory"
-            );
-            addr += 16;
-        }
+        // 1. Set standard memory protection via the OS abstraction.
+        try os.memProtect(ptr, len, true, true);
+        // 2. Apply MTE tag to memory granules (16-byte granules, tag in bits 59:56).
+        mte.tagRange(ptr, len, key);
     }
 };
 
