@@ -38,3 +38,39 @@ jobs:
 
       - name: Run tests
         run: zig build test --summary all
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - uses: android-ndk/setup-ndk@v3
+        id: setup-ndk
+        with:
+          ndk-version: 26.1.10909125
+
+      - name: Cross-compile libraries for Android (API 29+)
+        run: |
+          API=29
+          SYSROOT="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          mkdir -p /tmp/hajr-android-libc
+          for TRIPLE in aarch64-linux-android x86_64-linux-android; do
+            cat > "/tmp/hajr-android-libc/$TRIPLE.libc" <<EOF
+          include_dir=$SYSROOT/usr/include
+          sys_include_dir=$SYSROOT/usr/include
+          crt_dir=$SYSROOT/usr/lib/$TRIPLE/$API
+          msvc_lib_dir=
+          kernel32_lib_dir=
+          gcc_dir=
+          EOF
+            zig build --libc "/tmp/hajr-android-libc/$TRIPLE.libc" -Dtarget=$TRIPLE.$API
+            test -f zig-out/lib/libhajr.a
+            test -f zig-out/lib/libhajr_ffi.so
+            test -f zig-out/lib/libhajr_ffi_static.a
+            echo "verified Android libraries for $TRIPLE"
+          done

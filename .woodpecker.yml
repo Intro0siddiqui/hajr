@@ -25,6 +25,27 @@ steps:
       # 4. Verify macOS x86_64 (Intel Mac) cross-compilation
       - zig build -Dtarget=x86_64-macos
 
+      # 5. Android libraries (requires ANDROID_NDK_HOME; skipped otherwise)
+      - |
+        if [ -n "$ANDROID_NDK_HOME" ]; then
+          API=29
+          SYSROOT="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          mkdir -p /tmp/hajr-android-libc
+          for TRIPLE in aarch64-linux-android x86_64-linux-android; do
+            cat > "/tmp/hajr-android-libc/$TRIPLE.libc" <<EOF
+          include_dir=$SYSROOT/usr/include
+          sys_include_dir=$SYSROOT/usr/include
+          crt_dir=$SYSROOT/usr/lib/$TRIPLE/$API
+          msvc_lib_dir=
+          kernel32_lib_dir=
+          gcc_dir=
+          EOF
+            zig build --libc "/tmp/hajr-android-libc/$TRIPLE.libc" -Dtarget=$TRIPLE.$API
+          done
+        else
+          echo "ANDROID_NDK_HOME not set; skipping Android cross-compile"
+        fi
+
 when:
   event: [push, pull_request]
   branch: main

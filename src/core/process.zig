@@ -7,6 +7,7 @@ pub const SpawnError = error{
     MemoryAllocationFailed,
     NamespaceFailed,
     PkeyFailed,
+    UnsupportedPlatform,
 };
 
 pub fn spawnCompartment(
@@ -15,6 +16,11 @@ pub fn spawnCompartment(
     argv: []const []const u8,
     out_socket: *i32,
 ) !u32 {
+    // Android has no fork/unshare/execve compartment model in Hajr. Auxiliary
+    // processes are isolatedProcess Services; their rings are attached via FD
+    // passing and hajr_ring_map_with_signal. Do not attempt any Linux fallback.
+    if (comptime hw.os.isAndroid()) return error.UnsupportedPlatform;
+
     if (comptime builtin.os.tag == .linux) {
         // 1. Prepare all data BEFORE fork (async-signal-safe)
         const path_z = try allocator.dupeZ(u8, path);

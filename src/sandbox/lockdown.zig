@@ -119,3 +119,9 @@ test "process type from int" {
     try std.testing.expectEqual(ProcessType.network, ProcessType.fromInt(1));
     try std.testing.expectEqual(ProcessType.gpu, ProcessType.fromInt(2));
 }
+
+test "android seal is unsupported and never marks the process sealed" {
+    if (comptime !hw.os.isAndroid()) return error.SkipZigTest;
+    try std.testing.expectError(error.UnsupportedPlatform, seal(.web));
+    try std.testing.expect(!isSealed());
+}

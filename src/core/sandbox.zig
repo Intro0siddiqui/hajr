@@ -64,7 +64,7 @@ pub const HardwareProtection = struct {
                 }
                 return .software_fallback;
             },
-            .aarch64 => return if (builtin.os.tag == .linux) .arm_mte else .software_fallback,
+            .aarch64 => return if (hw.detectMte()) .arm_mte else .software_fallback,
             else => return .software_fallback,
         }
     }

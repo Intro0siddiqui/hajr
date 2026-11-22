@@ -14,6 +14,38 @@ else
 
 const page_size = std.heap.page_size_min;
 
+/// True when the target is Android (Zig models Android as Linux + Android ABI).
+pub fn isAndroid() bool {
+    return builtin.target.abi.isAndroid();
+}
+
+// ARM64 UAPI constants (asm/hwcap.h, linux/prctl.h).
+const HWCAP2_MTE: usize = @as(usize, 1) << 18;
+const PR_GET_TAGGED_ADDR_CTRL: usize = 56;
+const PR_TAGGED_ADDR_ENABLE: usize = @as(usize, 1) << 0;
+
+// 0 = not probed yet, 1 = supported, 2 = unsupported.
+var mte_state: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
+
+/// Runtime MTE capability probe. Hardware tagging is only used when the kernel
+/// advertises MTE (AT_HWCAP2) *and* tagged user addresses are enabled
+/// (PR_GET_TAGGED_ADDR_CTRL). Cached; racing probes simply compute the same value.
+pub fn detectMte() bool {
+    if (comptime (builtin.cpu.arch != .aarch64 or builtin.os.tag != .linux)) return false;
+
+    const cached = mte_state.load(.acquire);
+    if (cached != 0) return cached == 1;
+
+    const hwcap2 = std.os.linux.getauxval(std.elf.AT_HWCAP2);
+    const rc = std.os.linux.syscall1(.prctl, PR_GET_TAGGED_ADDR_CTRL);
+    const supported = (hwcap2 & HWCAP2_MTE) != 0 and
+        std.os.linux.errno(rc) == .SUCCESS and
+        (rc & PR_TAGGED_ADDR_ENABLE) != 0;
+
+    mte_state.store(if (supported) 1 else 2, .release);
+    return supported;
+}
+
 pub fn memAlloc(size: usize) ![]align(page_size) u8 {
     if (comptime builtin.os.tag == .windows) {
         return windows.memory.memAlloc(size);
@@ -107,6 +139,19 @@ pub fn pkeyMprotect(ptr: [*]u8, len: usize, prot: std.posix.PROT, key: u32) !voi
         0,
     );
     if (std.os.linux.errno(res) != .SUCCESS) return error.ProtectionFailed;
+}
+
+/// Create a non-blocking eventfd used for ring wakeups.
+/// AArch64 only provides `eventfd2`; x86_64 provides `eventfd` (`eventfd2` is
+/// also available but needs the newer syscall number).
+pub fn eventfdCreate(flags: u32) !OsHandle {
+    if (comptime builtin.os.tag != .linux) return error.UnsupportedPlatform;
+    const res = if (comptime builtin.cpu.arch == .aarch64)
+        std.os.linux.syscall2(.eventfd2, 0, flags)
+    else
+        std.os.linux.syscall2(.eventfd, 0, flags);
+    if (std.os.linux.errno(res) != .SUCCESS) return error.EventFdFailed;
+    return @intCast(res);
 }
 
 pub fn fileOpen(path: []const u8) !OsHandle {
@@ -392,6 +437,12 @@ const gpu_landlock_rules = if (builtin.os.tag == .linux) &[_]@import("landlock.z
 /// Must be called after all initialization is complete and before
 /// processing any untrusted data.
 pub fn sealProcess(process_type: ProcessType, debug: bool) LockdownError!void {
+    // Android apps already run under SELinux / isolatedProcess restrictions.
+    // Hajr installs no policy of its own: no Landlock, no desktop Seccomp filter
+    // over Bionic/Binder. Report unsupported so the C FFI logs it and isSealed()
+    // stays false.
+    if (isAndroid()) return error.UnsupportedPlatform;
+
     switch (builtin.os.tag) {
         .linux => {
             const seccomp = @import("seccomp.zig");
@@ -472,6 +523,15 @@ const win32_synch = if (builtin.os.tag == .windows) struct {
     ) callconv(.winapi) void;
 } else struct {};
 
+const darwin_synch = if (builtin.os.tag == .macos) struct {
+    pub const UL_COMPARE_AND_WAIT: u32 = 1;
+    pub const UL_COMPARE_AND_WAIT_SHARED: u32 = 3;
+    pub const ULF_WAKE_ALL: u32 = 0x00000100;
+
+    extern "c" fn __ulock_wait(operation: u32, addr: ?*const anyopaque, value: u64, timeout: u32) callconv(.c) c_int;
+    extern "c" fn __ulock_wake(operation: u32, addr: ?*const anyopaque, wake_value: u64) callconv(.c) c_int;
+} else struct {};
+
 pub fn futexWait(addr: *volatile u32, expected: u32) void {
     if (comptime builtin.os.tag == .linux) {
         _ = std.os.linux.syscall4(
@@ -481,6 +541,12 @@ pub fn futexWait(addr: *volatile u32, expected: u32) void {
             expected,
             0,
         );
+    } else if (comptime builtin.os.tag == .macos) {
+        const ptr: ?*const anyopaque = @ptrCast(@volatileCast(addr));
+        const res = darwin_synch.__ulock_wait(darwin_synch.UL_COMPARE_AND_WAIT_SHARED, ptr, @as(u64, expected), 0);
+        if (res < 0) {
+            _ = darwin_synch.__ulock_wait(darwin_synch.UL_COMPARE_AND_WAIT, ptr, @as(u64, expected), 0);
+        }
     } else if (comptime builtin.os.tag == .windows) {
         var comp = expected;
         _ = win32_synch.WaitOnAddress(@ptrCast(@volatileCast(addr)), &comp, @sizeOf(u32), win32_synch.INFINITE);
@@ -495,6 +561,14 @@ pub fn futexWake(addr: *volatile u32, count: u32) void {
             FUTEX_WAKE_PRIVATE,
             count,
         );
+    } else if (comptime builtin.os.tag == .macos) {
+        const ptr: ?*const anyopaque = @ptrCast(@volatileCast(addr));
+        const op: u32 = if (count > 1) (darwin_synch.UL_COMPARE_AND_WAIT_SHARED | darwin_synch.ULF_WAKE_ALL) else darwin_synch.UL_COMPARE_AND_WAIT_SHARED;
+        const res = darwin_synch.__ulock_wake(op, ptr, 0);
+        if (res < 0) {
+            const priv_op: u32 = if (count > 1) (darwin_synch.UL_COMPARE_AND_WAIT | darwin_synch.ULF_WAKE_ALL) else darwin_synch.UL_COMPARE_AND_WAIT;
+            _ = darwin_synch.__ulock_wake(priv_op, ptr, 0);
+        }
     } else if (comptime builtin.os.tag == .windows) {
         const ptr: *const anyopaque = @ptrCast(@volatileCast(addr));
         if (count == 1) {
