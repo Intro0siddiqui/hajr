@@ -49,10 +49,11 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: android-ndk/setup-ndk@v3
+      - uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
-          ndk-version: 26.1.10909125
+          ndk-version: r26d
+          local-cache: true
 
       - name: Cross-compile libraries for Android (API 29+)
         run: |
