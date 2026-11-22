@@ -243,8 +243,59 @@ pub fn spawnCompartment(
             // Parent process
             return @intCast(pid);
         }
+    } else if (comptime builtin.os.tag == .macos) {
+        // Darwin/macOS process spawning with Hajr IPC FD inheritance
+        const path_z = try allocator.dupeZ(u8, path);
+        defer allocator.free(path_z);
+
+        var c_argv = try allocator.alloc(?[*:0]const u8, argv.len + 1);
+        defer allocator.free(c_argv);
+        for (argv, 0..) |arg, i| {
+            c_argv[i] = (try allocator.dupeZ(u8, arg)).ptr;
+        }
+        c_argv[argv.len] = null;
+        defer {
+            for (c_argv[0..argv.len]) |arg| {
+                if (arg) |ptr| allocator.free(std.mem.span(ptr));
+            }
+        }
+
+        const envp: [*:null]?[*:0]const u8 = @ptrCast(std.c.environ);
+
+        const pid = std.c.fork();
+        if (pid < 0) return error.SpawnFailed;
+        if (pid == 0) {
+            // Child process on macOS
+            // Clear FD_CLOEXEC for all Hajr IPC descriptors so they survive execve
+            const fds_to_keep = [_]?[*:0]const u8{
+                std.c.getenv("ZAWRA_HAJR_INBOUND_FD"),
+                std.c.getenv("ZAWRA_HAJR_OUTBOUND_FD"),
+                std.c.getenv("ZAWRA_HAJR_INBOUND_SIG"),
+                std.c.getenv("ZAWRA_HAJR_OUTBOUND_SIG"),
+                std.c.getenv("ZAWRA_HAJR_TRACE_RING_FD"),
+                std.c.getenv("ZAWRA_HAJR_TRACE_SIGNAL_FD"),
+                std.c.getenv("ZAWRA_HAJR_FD_TRANSFER_FD"),
+            };
+            for (fds_to_keep) |maybe_str| {
+                if (maybe_str) |s| {
+                    const s_span = std.mem.span(s);
+                    if (std.fmt.parseInt(i32, s_span, 10)) |target_fd| {
+                        if (target_fd >= 0) {
+                            // F_SETFD = 2, 0 = clear FD_CLOEXEC
+                            _ = std.c.fcntl(target_fd, std.c.F.SETFD, @as(c_int, 0));
+                        }
+                    } else |_| {}
+                }
+            }
+
+            // Execute the child binary with inherited environment
+            _ = std.c.execve(path_z.ptr, @ptrCast(c_argv.ptr), @ptrCast(envp));
+            std.c.exit(1);
+        } else {
+            return @intCast(pid);
+        }
     } else {
-        // Fallback for other OSs (like macOS and Windows)
+        // Fallback for other OSs (like Windows)
         var threaded_io = std.Io.Threaded.init(allocator, .{});
         defer threaded_io.deinit();
         const io = threaded_io.io();
