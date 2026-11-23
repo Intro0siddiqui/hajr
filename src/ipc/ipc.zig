@@ -122,7 +122,8 @@ pub const IpcRing = struct {
         target_tier: SandboxTier,
     ) !*IpcRing {
         const slots = try std.heap.page_allocator.alloc(RingSlot, slot_count);
-        
+        errdefer std.heap.page_allocator.free(slots);
+
         const ring = try std.heap.page_allocator.create(IpcRing);
         ring.* = .{
             .slots = slots,

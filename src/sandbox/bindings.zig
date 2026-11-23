@@ -16,6 +16,8 @@ const win32 = if (builtin.os.tag == .windows) struct {
     pub const FILE_MAP_WRITE: u32 = 0x0002;
     pub const FILE_MAP_READ: u32 = 0x0004;
 
+    pub extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+
     pub extern "kernel32" fn CreateFileMappingW(
         hFile: ?*anyopaque,
         lpFileMappingAttributes: ?*anyopaque,
@@ -23,6 +25,12 @@ const win32 = if (builtin.os.tag == .windows) struct {
         dwMaximumSizeHigh: u32,
         dwMaximumSizeLow: u32,
         lpName: ?[*:0]const u16,
+    ) callconv(.winapi) ?*anyopaque;
+
+    pub extern "kernel32" fn OpenFileMappingW(
+        dwDesiredAccess: u32,
+        bInheritHandle: i32,
+        lpName: [*:0]const u16,
     ) callconv(.winapi) ?*anyopaque;
 
     pub extern "kernel32" fn MapViewOfFile(
@@ -83,6 +91,47 @@ const darwin = if (builtin.os.tag == .macos) struct {
 } else struct {};
 
 var darwin_ring_counter = std.atomic.Value(u32).init(1);
+
+/// Windows ring sections are created as *named* file mappings so that another
+/// process can obtain a valid section handle via OpenFileMappingW. A process
+/// local HANDLE value cannot be used by a different process unless it is
+/// duplicated (or looked up by name), so the numeric id returned across the
+/// FFI boundary is a locally generated ring id rather than a raw HANDLE.
+const windows_ring = if (builtin.os.tag == .windows) struct {
+    var spinlock: std.atomic.Mutex = .unlocked;
+    var handles: std.AutoHashMapUnmanaged(u64, *anyopaque) = .empty;
+    var next_id = std.atomic.Value(u64).init(1);
+
+    fn lock() void {
+        while (!spinlock.tryLock()) std.atomic.spinLoopHint();
+    }
+
+    fn unlock() void {
+        spinlock.unlock();
+    }
+
+    fn name(id: u64, buf: *[96:0]u16) ?[*:0]const u16 {
+        var utf8_buf: [64:0]u8 = undefined;
+        const s = std.fmt.bufPrintZ(&utf8_buf, "Local\\hajr-ring-{d}", .{id}) catch return null;
+        const len = std.unicode.utf8ToUtf16Le(buf, s) catch return null;
+        buf[len] = 0;
+        return @ptrCast(buf);
+    }
+} else struct {};
+
+/// Win64 HANDLEs are 32-bit handle values carried in a pointer-sized type
+/// (sign-extended). Encode/decode through the low 32 bits and sign-extend on
+/// the way back so a 64-bit handle value survives the i32 FFI field.
+fn windowsSignalFdFromHandle(handle: *anyopaque) i32 {
+    return @bitCast(@as(u32, @truncate(@intFromPtr(handle))));
+}
+
+fn windowsHandleFromSignalFd(fd: i32) ?*anyopaque {
+    const raw: u32 = @bitCast(fd);
+    const extended: usize = @bitCast(@as(isize, @as(i32, @bitCast(raw))));
+    return @ptrFromInt(extended);
+}
+
 
 fn createDarwinSelfSignalingSocket() i32 {
     if (comptime builtin.os.tag != .macos) return -1;
@@ -300,7 +349,7 @@ export fn hajr_ring_init(
         s_fd = createDarwinSelfSignalingSocket();
     } else if (comptime builtin.os.tag == .windows) {
         if (win32.CreateEventW(null, 0, 0, null)) |ev| {
-            s_fd = @bitCast(@as(u32, @truncate(@intFromPtr(ev))));
+            s_fd = windowsSignalFdFromHandle(ev);
         }
     }
 
@@ -363,7 +412,7 @@ export fn hajr_ring_free(c_ring: ?*C_HardenedRingBuffer) callconv(.c) void {
             if (comptime builtin.os.tag != .windows) {
                 _ = std.posix.system.close(r.signal_fd);
             } else {
-                _ = CloseHandle(@ptrFromInt(@as(usize, @as(u32, @bitCast(r.signal_fd)))));
+                _ = CloseHandle(windowsHandleFromSignalFd(r.signal_fd));
             }
         }
         std.heap.c_allocator.destroy(r);
@@ -474,7 +523,7 @@ export fn hajr_ring_signal(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
             const rc = std.posix.system.write(ring.signal_fd, @ptrCast(&val), 1);
             return if (rc >= 0) 1 else -1;
         } else if (comptime builtin.os.tag == .windows) {
-            const handle: ?*anyopaque = @ptrFromInt(@as(usize, @as(u32, @bitCast(ring.signal_fd))));
+            const handle = windowsHandleFromSignalFd(ring.signal_fd);
             return if (win32.SetEvent(handle) != 0) 1 else -1;
         }
     }
@@ -496,7 +545,7 @@ export fn hajr_ring_wait(c_ring: ?*C_HardenedRingBuffer) callconv(.c) i32 {
             const rc = std.posix.system.read(ring.signal_fd, @ptrCast(&val), 1);
             return if (rc >= 0) 1 else -1;
         } else if (comptime builtin.os.tag == .windows) {
-            const handle: ?*anyopaque = @ptrFromInt(@as(usize, @as(u32, @bitCast(ring.signal_fd))));
+            const handle = windowsHandleFromSignalFd(ring.signal_fd);
             const wait_res = WaitForSingleObject(handle, INFINITE);
             _ = win32.ResetEvent(handle);
             return if (wait_res == 0) 1 else -1;
@@ -670,16 +719,33 @@ export fn __hajr_create_anonymous_ring(data_size: usize) callconv(.c) u64 {
         return @as(u64, @intCast(fd));
     } else if (comptime builtin.os.tag == .windows) {
         const total_size = sandbox.RingConfig.METADATA_SIZE + data_size;
+        // Embed the creating PID in the id: the mapping name is derived from
+        // the id alone, so this keeps names unique across concurrently running
+        // processes while remaining transportable as a single u64.
+        const pid: u64 = win32.GetCurrentProcessId();
+        const seq = windows_ring.next_id.fetchAdd(1, .monotonic);
+        const id = (pid << 32) | (seq & 0xFFFF_FFFF);
+        var name_buf: [96:0]u16 = undefined;
+        const name = windows_ring.name(id, &name_buf) orelse return std.math.maxInt(u64);
         const handle = win32.CreateFileMappingW(
             win32.INVALID_HANDLE_VALUE,
             null,
             win32.PAGE_READWRITE,
             @intCast((total_size >> 32) & 0xFFFFFFFF),
             @intCast(total_size & 0xFFFFFFFF),
-            null,
+            name,
         );
         if (handle == null or handle == win32.INVALID_HANDLE_VALUE) return std.math.maxInt(u64);
-        return @as(u64, @intFromPtr(handle.?));
+
+        // Keep the section handle alive for the lifetime of the mapping: the
+        // named object would otherwise be destroyed once this process exits.
+        windows_ring.lock();
+        defer windows_ring.unlock();
+        windows_ring.handles.put(std.heap.page_allocator, id, handle.?) catch {
+            _ = CloseHandle(handle.?);
+            return std.math.maxInt(u64);
+        };
+        return id;
     }
     return std.math.maxInt(u64);
 }
@@ -693,14 +759,39 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
     var mmap_ptr: [*]u8 = undefined;
 
     if (comptime builtin.os.tag == .windows) {
-        const handle: ?*anyopaque = @ptrFromInt(@as(usize, @intCast(id)));
+        // Resolve the section handle. Locally created rings are kept in the
+        // registry; rings created by another process must be opened by name
+        // because a HANDLE value is process-local.
+        var handle: ?*anyopaque = null;
+        var close_handle_after_map = false;
+
+        windows_ring.lock();
+        handle = windows_ring.handles.get(id);
+        windows_ring.unlock();
+
+        if (handle == null) {
+            var name_buf: [96:0]u16 = undefined;
+            const name = windows_ring.name(id, &name_buf) orelse return null;
+            handle = win32.OpenFileMappingW(
+                win32.FILE_MAP_READ | win32.FILE_MAP_WRITE,
+                0,
+                name,
+            ) orelse return null;
+            // The mapped view keeps the section alive after the handle closes.
+            close_handle_after_map = true;
+        }
+
         const view = win32.MapViewOfFile(
             handle,
             win32.FILE_MAP_READ | win32.FILE_MAP_WRITE,
             0,
             0,
             buffer_len,
-        ) orelse return null;
+        ) orelse {
+            if (close_handle_after_map) _ = CloseHandle(handle);
+            return null;
+        };
+        if (close_handle_after_map) _ = CloseHandle(handle);
         mmap_ptr = @ptrCast(view);
 
         var mbi: win32.MEMORY_BASIC_INFORMATION = undefined;
@@ -781,6 +872,13 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
                 _ = std.os.linux.syscall3(.write, 2, @intFromPtr(str.ptr), str.len);
             }
         } else |_| {}
+        // The view/file mapping has already been established; release it
+        // before bailing out so the region is not leaked.
+        if (comptime builtin.os.tag == .windows) {
+            _ = win32.UnmapViewOfFile(@ptrCast(mmap_ptr));
+        } else {
+            std.posix.munmap(@alignCast(mmap_ptr[0..buffer_len]));
+        }
         return null;
     }
 

@@ -191,6 +191,9 @@ const SYS_STAT: u32 = if (is_64) 4 else 189;
 const SYS_LSTAT: u32 = if (is_64) 6 else 190;
 
 // --- Event loop & Extended I/O ---
+// aarch64 has no poll(2); syscall 73 there is ppoll(2), so SYS_POLL aliases it.
+// buildFilterWithAction() de-duplicates the final list so this does not emit
+// a redundant BPF rule on aarch64.
 const SYS_POLL: u32 = if (builtin.cpu.arch == .aarch64) 73 else 7;
 const SYS_PPOLL: u32 = if (builtin.cpu.arch == .aarch64) 73 else 271;
 const SYS_MEMFD_CREATE: u32 = if (builtin.cpu.arch == .aarch64) 279 else 319;
@@ -217,17 +220,30 @@ fn ret(code: u32) sock_filter {
     return .{ .code = BPF_RET | BPF_K, .jt = 0, .jf = 0, .k = code };
 }
 
-fn buildFilter(comptime nrs: []const u32) [5 + nrs.len]sock_filter {
+fn dedupeSyscalls(comptime nrs: []const u32) []const u32 {
+    @setEvalBranchQuota(4 * nrs.len * nrs.len + 1024);
+    var unique: []const u32 = &.{};
+    outer: for (nrs) |nr| {
+        for (unique) |existing| {
+            if (existing == nr) continue :outer;
+        }
+        unique = unique ++ [_]u32{nr};
+    }
+    return unique;
+}
+
+fn buildFilter(comptime nrs: []const u32) [5 + dedupeSyscalls(nrs).len]sock_filter {
     return buildFilterWithAction(nrs, SECCOMP_RET_KILL);
 }
 
-fn buildFilterWithAction(comptime nrs: []const u32, deny_action: u32) [5 + nrs.len]sock_filter {
-    const N = nrs.len;
+fn buildFilterWithAction(comptime nrs: []const u32, deny_action: u32) [5 + dedupeSyscalls(nrs).len]sock_filter {
+    const syscalls = dedupeSyscalls(nrs);
+    const N = syscalls.len;
     var prog: [5 + N]sock_filter = undefined;
     prog[0] = load(4);
     prog[1] = check(native_arch, 0, @as(u8, @intCast(N + 1)));
     prog[2] = load(0);
-    for (nrs, 0..) |nr, i| {
+    for (syscalls, 0..) |nr, i| {
         prog[3 + i] = check(nr, @as(u8, @intCast(N - i)), 0);
     }
     prog[3 + N] = ret(deny_action);

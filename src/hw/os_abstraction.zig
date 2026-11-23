@@ -469,13 +469,18 @@ pub fn sealProcess(process_type: ProcessType, debug: bool) LockdownError!void {
             const seccomp = @import("seccomp.zig");
             const landlock = @import("landlock.zig");
 
-            // Apply Landlock first so its ruleset creation and restrictions occur before Seccomp BPF filters engage
             const rules = switch (process_type) {
                 .web => web_landlock_rules,
                 .network => network_landlock_rules,
                 .gpu => gpu_landlock_rules,
             };
-            try landlock.denyWithExceptions(rules);
+
+            // Apply Landlock first so its ruleset creation and restrictions occur before Seccomp BPF filters engage.
+            // A kernel without Landlock support must not abort sealing: fall through to Seccomp.
+            landlock.denyWithExceptions(rules) catch |err| switch (err) {
+                error.LandlockNotSupported => {},
+                else => return err,
+            };
 
             const filter_kind: seccomp.FilterKind = if (debug) switch (process_type) {
                 .web => .web_process_debug,
