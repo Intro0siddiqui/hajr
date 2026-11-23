@@ -305,7 +305,12 @@ pub fn spawnCompartment(
         });
         
         if (comptime builtin.os.tag == .windows) {
-            return 0; // Windows PID stub
+            out_socket.* = -1;
+            if (child.id) |h| {
+                const pid = hw.windows.GetProcessId(h);
+                return @intCast(pid);
+            }
+            return 0;
         } else {
             // On POSIX, child.id is a PID (optional)
             return @intCast(child.id orelse 0);

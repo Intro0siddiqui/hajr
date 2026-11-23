@@ -173,7 +173,11 @@ pub export fn hajr_trace_policy_event(request_id: u64, action: u8, reason_code: 
     if (std.c.getenv("HAJR_IPC_DEBUG") != null) {
         var buf: [128]u8 = undefined;
         if (std.fmt.bufPrint(&buf, "[HAJR-POLICY-TRACE] req={d} action={d} reason={d}\n", .{ request_id, action, reason_code })) |msg| {
-            _ = hw.posix_io.fileWrite(2, msg, 0) catch 0;
+            const stderr_handle: hw.os.OsHandle = if (comptime builtin.os.tag == .windows)
+                hw.windows.GetStdHandle(hw.windows.STD_ERROR_HANDLE)
+            else
+                2;
+            _ = hw.posix_io.fileWrite(stderr_handle, msg, 0) catch 0;
         } else |_| {}
     }
 }
