@@ -16,16 +16,16 @@ Hajr is designed to execute across multiple operating systems and CPU architectu
 | **Android** | `x86_64` | **Software Fallback** | No MPK/MTE on the Android emulator target; page-level `mprotect` isolation. |
 | **Windows** | `x86_64` | **Software Fallback** | Uses `VirtualAlloc`/`VirtualProtect` for page-level guards and Vectored Exception Handling (VEH) for fault recovery. |
 | **macOS** | `x86_64` | **Software Fallback** | Uses POSIX `mmap`/`mprotect` for page-level guards and `sigaction` handlers for fault recovery. |
-| **macOS** | `aarch64` | **Software Fallback** | Uses POSIX `mmap`/`mprotect` with dynamic `std.heap.page_size_min` (16KB page alignment) and `sigaction` handlers. |
+| **macOS** | `aarch64` | **Hardware (Apple M5+ FEAT_MTE4) / Software Fallback** | Uses hardware memory tagging via `stg`/`tco` when `hw.optional.arm.FEAT_MTE4` is present; otherwise POSIX `mmap`/`mprotect` with dynamic 16KB alignment and guard pages. |
 
 ---
 
 ## 2. Hardware vs. Fallback Isolation
 
-### A. Hardware-Assisted (Linux-Only)
-On Linux systems with compatible CPUs, Hajr enforces sub-process memory compartments without process context switches:
-* **Intel MPK**: Compartments are assigned keys `0-15`. Access permissions are modified instantly by updating the thread's `PKRU` register via assembly.
-* **ARM MTE**: Memory is tagged at 16-byte granules. Pointers hold tags in bits `[59:56]`. Faults are thrown immediately if a tagged pointer attempts to access mismatched memory.
+### A. Hardware-Assisted (Linux & macOS Apple M5+)
+On compatible CPUs, Hajr enforces sub-process memory compartments without process context switches:
+* **Intel MPK (Linux x86_64)**: Compartments are assigned keys `0-15`. Access permissions are modified instantly by updating the thread's `PKRU` register via assembly.
+* **ARM MTE (Linux & macOS M5+ AArch64)**: Memory is tagged at 16-byte granules. Pointers hold tags in bits `[59:56]`. On Linux, capability is verified via `AT_HWCAP2` & `PR_GET_TAGGED_ADDR_CTRL`; on macOS, via Darwin `hw.optional.arm.FEAT_MTE4` (Memory Integrity Enforcement / EMTE). Faults are thrown immediately if a tagged pointer attempts to access mismatched memory.
 
 On Android, Hajr never installs its own syscall/filesystem policy: `sealProcess()`
 returns `error.UnsupportedPlatform` (logged by the C FFI) and `isSealed()` stays

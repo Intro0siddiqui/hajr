@@ -35,12 +35,12 @@ pub const Permission = enum {
 const arch_impl = if (builtin.cpu.arch == .x86_64)
     if (builtin.os.tag == .linux) X86_64_Linux else X86_64_Portable
 else if (builtin.cpu.arch == .aarch64)
-    if (builtin.os.tag == .linux) AArch64_Linux else AArch64_Portable
+    AArch64_MTE
 else
     Fallback;
 
-/// Runtime MTE capability (AT_HWCAP2 + tagged address control), delegated to the
-/// OS abstraction. False on non-AArch64 / non-Linux targets.
+/// Runtime MTE capability (Linux AT_HWCAP2 + tagged address control, Darwin Apple M5+ FEAT_MTE4).
+/// False on unsupported architectures or non-MTE chips.
 pub fn detectMte() bool {
     return os.detectMte();
 }
@@ -149,12 +149,12 @@ const X86_64_Portable = struct {
     }
 };
 
-/// AArch64 Linux Implementation using ARM MTE (Memory Tagging Extension)
-const AArch64_Linux = struct {
+/// AArch64 Implementation using ARM MTE (Memory Tagging Extension)
+const AArch64_MTE = struct {
     /// MTE uses pointer tagging rather than a single global register like PKRU.
     /// The TCO (Tag Check Override) register can be used to globally disable checks.
     /// All MTE instructions are gated on runtime capability detection and fall
-    /// back to page protection (mprotect) on hardware/Android without MTE.
+    /// back to page protection (mprotect) on hardware/OS without MTE.
     pub fn writeProtectionKey(value: u32) void {
         if (!os.detectMte()) return;
         mte.writeTco(value);
@@ -183,30 +183,6 @@ const AArch64_Linux = struct {
         try os.memProtect(ptr, len, true, true);
         // 2. Apply MTE tag to memory granules (16-byte granules, tag in bits 59:56).
         mte.tagRange(ptr, len, key);
-    }
-};
-
-/// AArch64 Portable Implementation (macOS, FreeBSD, etc.) — no MTE support
-const AArch64_Portable = struct {
-    pub fn writeProtectionKey(value: u32) void {
-        _ = value;
-        // No-op: Apple Silicon CPUs do not implement MTE.
-        // The tco (Tag Check Override) register used on AArch64 Linux
-        // is not available, and there is no PKRU equivalent on AArch64.
-    }
-
-    pub fn readProtectionKey() u32 {
-        return 0;
-    }
-
-    pub fn setKeyPermission(key: u32, perm: Permission) void {
-        _ = key;
-        _ = perm;
-        // AArch64 Portable no-op: MTE is not available outside Linux.
-    }
-
-    pub fn applyProtectionToRegion(ptr: [*]u8, len: usize, key: u32) !void {
-        return Fallback.applyProtectionToRegion(ptr, len, key);
     }
 };
 

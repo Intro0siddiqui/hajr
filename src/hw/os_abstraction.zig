@@ -24,23 +24,44 @@ const HWCAP2_MTE: usize = @as(usize, 1) << 18;
 const PR_GET_TAGGED_ADDR_CTRL: usize = 56;
 const PR_TAGGED_ADDR_ENABLE: usize = @as(usize, 1) << 0;
 
+extern "c" fn sysctlbyname(
+    name: [*:0]const u8,
+    oldp: ?*anyopaque,
+    oldlenp: ?*usize,
+    newp: ?*const anyopaque,
+    newlen: usize,
+) c_int;
+
 // 0 = not probed yet, 1 = supported, 2 = unsupported.
 var mte_state: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
 
-/// Runtime MTE capability probe. Hardware tagging is only used when the kernel
-/// advertises MTE (AT_HWCAP2) *and* tagged user addresses are enabled
-/// (PR_GET_TAGGED_ADDR_CTRL). Cached; racing probes simply compute the same value.
+/// Runtime MTE capability probe. Hardware tagging is used when:
+/// - Linux: The kernel advertises MTE (AT_HWCAP2) *and* tagged user addresses are enabled (PR_GET_TAGGED_ADDR_CTRL).
+/// - Darwin (macOS): Apple Silicon M5+ advertises FEAT_MTE4 (EMTE) or FEAT_MTE via sysctl.
+/// Cached; racing probes simply compute the same value.
 pub fn detectMte() bool {
-    if (comptime (builtin.cpu.arch != .aarch64 or builtin.os.tag != .linux)) return false;
+    if (comptime builtin.cpu.arch != .aarch64) return false;
 
     const cached = mte_state.load(.acquire);
     if (cached != 0) return cached == 1;
 
-    const hwcap2 = std.os.linux.getauxval(std.elf.AT_HWCAP2);
-    const rc = std.os.linux.syscall1(.prctl, PR_GET_TAGGED_ADDR_CTRL);
-    const supported = (hwcap2 & HWCAP2_MTE) != 0 and
-        std.os.linux.errno(rc) == .SUCCESS and
-        (rc & PR_TAGGED_ADDR_ENABLE) != 0;
+    var supported = false;
+
+    if (comptime builtin.os.tag == .linux) {
+        const hwcap2 = std.os.linux.getauxval(std.elf.AT_HWCAP2);
+        const rc = std.os.linux.syscall1(.prctl, PR_GET_TAGGED_ADDR_CTRL);
+        supported = (hwcap2 & HWCAP2_MTE) != 0 and
+            std.os.linux.errno(rc) == .SUCCESS and
+            (rc & PR_TAGGED_ADDR_ENABLE) != 0;
+    } else if (comptime builtin.os.tag == .macos) {
+        var val: c_int = 0;
+        var len: usize = @sizeOf(c_int);
+        if (sysctlbyname("hw.optional.arm.FEAT_MTE4", &val, &len, null, 0) == 0 and val == 1) {
+            supported = true;
+        } else if (sysctlbyname("hw.optional.arm.FEAT_MTE", &val, &len, null, 0) == 0 and val == 1) {
+            supported = true;
+        }
+    }
 
     mte_state.store(if (supported) 1 else 2, .release);
     return supported;
