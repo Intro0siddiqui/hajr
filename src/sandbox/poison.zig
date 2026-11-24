@@ -432,7 +432,9 @@ pub const PoisonAwareRouter = struct {
     
     pub fn poll(self: *PoisonAwareRouter) usize {
         // First, check all rings for poison (fail-fast)
-        const poisoned = self.observer.checkAllRings() catch &[_]u64{};
+        const poisoned = self.observer.checkAllRings() catch {
+            return self.base.poll();
+        };
         defer std.heap.page_allocator.free(poisoned);
         
         // Recover any poisoned sandboxes immediately

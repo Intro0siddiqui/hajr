@@ -352,6 +352,7 @@ test "Router integration with poison detection" {
     
     // Check all rings should find poison
     const poisoned = r.checkAllRings();
+    defer if (poisoned.len > 0) r.allocator.free(poisoned);
     try std.testing.expectEqual(@as(usize, 1), poisoned.len);
     
     // Polling should skip poisoned ring

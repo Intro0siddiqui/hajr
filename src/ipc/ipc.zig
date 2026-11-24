@@ -208,6 +208,11 @@ pub const IpcRing = struct {
         
         // Read header and payload BEFORE advancing tail
         const header = slot.header;
+        if (header.payload_len > slot.payload.len) {
+            slot.occupied.store(false, .release);
+            ring.tail.store(tail + 1, .release);
+            return error.PayloadTooLarge;
+        }
         try buf.resize(allocator, header.payload_len);
         @memcpy(buf.items[0..header.payload_len], slot.payload[0..header.payload_len]);
         
@@ -238,6 +243,11 @@ pub const IpcRing = struct {
         
         // Copy data before advancing tail
         const header = slot.header;
+        if (header.payload_len > slot.payload.len) {
+            slot.occupied.store(false, .release);
+            ring.tail.store(tail + 1, .release);
+            return null;
+        }
         buf.resize(allocator, header.payload_len) catch return null;
         @memcpy(buf.items[0..header.payload_len], slot.payload[0..header.payload_len]);
         

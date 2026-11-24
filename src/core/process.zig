@@ -42,16 +42,17 @@ pub fn spawnCompartment(
         defer allocator.free(path_z);
         
         var c_argv = try allocator.alloc(?[*:0]const u8, argv.len + 1);
-        defer allocator.free(c_argv);
-        for (argv, 0..) |arg, i| {
-            c_argv[i] = (try allocator.dupeZ(u8, arg)).ptr;
-        }
-        c_argv[argv.len] = null;
+        @memset(c_argv, null);
         defer {
             for (c_argv[0..argv.len]) |arg| {
                 if (arg) |ptr| allocator.free(std.mem.span(ptr));
             }
+            allocator.free(c_argv);
         }
+        for (argv, 0..) |arg, i| {
+            c_argv[i] = (try allocator.dupeZ(u8, arg)).ptr;
+        }
+        c_argv[argv.len] = null;
 
         // Inherit parent's environment so child gets ZAWRA_HAJR_* vars for IPC bootstrap
         const envp: [*:null]?[*:0]const u8 = @ptrCast(std.c.environ);
@@ -361,16 +362,17 @@ pub fn spawnCompartment(
         defer allocator.free(path_z);
 
         var c_argv = try allocator.alloc(?[*:0]const u8, argv.len + 1);
-        defer allocator.free(c_argv);
-        for (argv, 0..) |arg, i| {
-            c_argv[i] = (try allocator.dupeZ(u8, arg)).ptr;
-        }
-        c_argv[argv.len] = null;
+        @memset(c_argv, null);
         defer {
             for (c_argv[0..argv.len]) |arg| {
                 if (arg) |ptr| allocator.free(std.mem.span(ptr));
             }
+            allocator.free(c_argv);
         }
+        for (argv, 0..) |arg, i| {
+            c_argv[i] = (try allocator.dupeZ(u8, arg)).ptr;
+        }
+        c_argv[argv.len] = null;
 
         const envp: [*:null]?[*:0]const u8 = @ptrCast(std.c.environ);
 

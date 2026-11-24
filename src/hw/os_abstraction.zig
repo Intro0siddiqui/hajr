@@ -76,6 +76,7 @@ pub fn memAlloc(size: usize) ![]align(page_size) u8 {
     const flags = std.posix.MAP{ .TYPE = .PRIVATE, .ANONYMOUS = true };
     const total = aligned_size + 2 * page_size;
     const mapped = try std.posix.mmap(null, total, prot, flags, -1, 0);
+    errdefer std.posix.munmap(mapped);
     const guard_flags = std.posix.MAP{ .TYPE = .PRIVATE, .ANONYMOUS = true, .FIXED = true };
     _ = try std.posix.mmap(mapped.ptr, page_size, std.posix.PROT{}, guard_flags, -1, 0);
     const after: [*]align(page_size) u8 = @alignCast(mapped.ptr + page_size + aligned_size);

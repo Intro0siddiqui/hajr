@@ -76,6 +76,7 @@ pub const RingRouter = struct {
     pub fn init(handlers: BackendHandler, config: Config) !*RingRouter {
         const allocator = std.heap.page_allocator;
         const router = try allocator.create(RingRouter);
+        errdefer allocator.destroy(router);
         router.* = .{
             .allocator = allocator,
             .rings = try allocator.alloc(ActiveRing, config.max_sandboxes),
@@ -178,7 +179,12 @@ pub const RingRouter = struct {
                     @memcpy(std.mem.asBytes(&req), ring.outbound_base[read_pos .. read_pos + req_size]);
                 }
 
-                const req_type = @as(RequestType, @enumFromInt(req.request_type));
+                const req_type = std.enums.fromInt(RequestType, req.request_type) orelse .invalid;
+                if (req_type == .invalid) {
+                    const bytes_processed = req_size + req.payload_length;
+                    meta.read_index.store(read_idx + bytes_processed, .release);
+                    continue;
+                }
                 
                 // Safety check: ensure payload is available (bounded to prevent overflow)
                 const required = req_size + req.payload_length;

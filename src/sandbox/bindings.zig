@@ -915,7 +915,7 @@ export fn __hajr_map_anonymous_ring_ex(id: u64, signal_fd: i32) callconv(.c) ?*a
 // ============================================================================
 
 export fn Zawra_File_Seek(handle: hw.os.OsHandle, offset: i64, origin: i32) callconv(.c) u64 {
-    const seek_origin: hw.os.SeekOrigin = @enumFromInt(origin);
+    const seek_origin = std.enums.fromInt(hw.os.SeekOrigin, origin) orelse return 0;
     return hw.os.fileSeek(handle, offset, seek_origin) catch 0;
 }
 
@@ -951,7 +951,7 @@ export fn Zawra_File_StatFD(handle: hw.os.OsHandle, info: *hw.os.FileInfo) callc
 
 export fn Zawra_File_Access(path: [*:0]const u8, mode: u32) callconv(.c) i32 {
     const path_slice = std.mem.span(path);
-    const access_mode: hw.os.AccessMode = @enumFromInt(mode);
+    const access_mode = std.enums.fromInt(hw.os.AccessMode, mode) orelse return 0;
     return if (hw.os.fileAccess(path_slice, access_mode) catch false) 1 else 0;
 }
 

@@ -360,7 +360,9 @@ pub const SandboxContext = struct {
     /// Allocate a protected memory arena for this sandbox
     pub fn allocateArena(ctx: *SandboxContext, size: usize) !*Arena {
         const arena = try ctx.allocator.create(Arena);
+        errdefer ctx.allocator.destroy(arena);
         arena.* = try Arena.create(size, ctx.protection_key);
+        errdefer arena.destroy();
         try ctx.arenas.append(ctx.allocator, arena);
         return arena;
     }
@@ -532,11 +534,17 @@ pub const Message = struct {
             return error.BufferTooSmall;
         }
         
-        const header = @as(*const MessageHeader, @ptrCast(@alignCast(buf.ptr))).*;
+        var header: MessageHeader = undefined;
+        @memcpy(std.mem.asBytes(&header), buf[0..@sizeOf(MessageHeader)]);
         
+        if (header.length < @sizeOf(MessageHeader) or header.length > buf.len) {
+            return error.InvalidMessageLength;
+        }
+        
+        const payload_len = header.length - @sizeOf(MessageHeader);
         return Message{
             .header = header,
-            .payload = buf[@sizeOf(MessageHeader)..][0..header.length - @sizeOf(MessageHeader)],
+            .payload = buf[@sizeOf(MessageHeader)..][0..payload_len],
         };
     }
 };
@@ -590,7 +598,9 @@ pub const SandboxManager = struct {
         manager.sequence += 1;
         
         var ctx = try manager.allocator.create(SandboxContext);
+        errdefer manager.allocator.destroy(ctx);
         ctx.* = try SandboxContext.init(manager.allocator, tier, id);
+        errdefer ctx.terminate();
         
         // Create IPC rings for this sandbox
         const ring_in = try manager.createRing(tier, .trusted, .inbound);
@@ -617,11 +627,13 @@ pub const SandboxManager = struct {
             source_tier.getProtectionKey();
         
         const ring = try manager.allocator.create(HardenedRingBuffer);
+        errdefer manager.allocator.destroy(ring);
         ring.* = try HardenedRingBuffer.create(
             manager.config.ring_buffer_size,
             key,
             target_tier,
         );
+        errdefer ring.destroy();
         
         try manager.rings.append(manager.allocator, ring);
         
@@ -638,14 +650,16 @@ pub const SandboxManager = struct {
             return error.NoInboundRing;
         
         // Serialize message
+        const total_len = @sizeOf(MessageHeader) + msg.payload.len;
         var buf: [4096]u8 = undefined;
-        try msg.serialize(&buf);
+        if (total_len > buf.len) return error.BufferTooSmall;
+        try msg.serialize(buf[0..total_len]);
         
-        try ring.write(&buf);
+        try ring.write(buf[0..total_len]);
     }
     
-    /// Receive a message from a sandbox
-    pub fn receiveMessage(manager: *SandboxManager, source_id: u64) !Message {
+    /// Receive a message from a sandbox into a caller-provided buffer (prevents dangling stack slice)
+    pub fn receiveMessage(manager: *SandboxManager, source_id: u64, out_buf: []u8) !Message {
         const ctx = manager.sandboxes.get(source_id) orelse return error.SandboxNotFound;
         
         const ring = if (ctx.rings_out.items.len > 0)
@@ -653,10 +667,9 @@ pub const SandboxManager = struct {
         else
             return error.NoOutboundRing;
         
-        var buf: [4096]u8 = undefined;
-        const len = try ring.read(&buf);
+        const len = try ring.read(out_buf);
         
-        return try Message.deserialize(buf[0..len]);
+        return try Message.deserialize(out_buf[0..len]);
     }
     
     /// Handle sandbox fault and trigger recovery
