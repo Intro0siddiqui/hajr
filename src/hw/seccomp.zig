@@ -17,8 +17,9 @@ const BPF_JEQ: u16 = 0x10;
 const BPF_K: u16 = 0x00;
 
 const SECCOMP_RET_ALLOW: u32 = 0x7fff0000;
-const SECCOMP_RET_KILL: u32 = 0x00000000;
-const SECCOMP_RET_LOG: u32 = 0x00050000; // Allow + log to audit (for debugging)
+const SECCOMP_RET_KILL_PROCESS: u32 = 0x80000000;
+const SECCOMP_RET_ERRNO: u32 = 0x00050000;
+const SECCOMP_RET_LOG: u32 = 0x7ffc0000; // Allow + log to audit (for debugging)
 const SECCOMP_SET_MODE_FILTER: u64 = 1;
 const SECCOMP_FILTER_FLAG_TSYNC: u64 = 1;
 const PR_SET_NO_NEW_PRIVS: u64 = 38;
@@ -48,7 +49,7 @@ const SYS_MUNMAP: u32 = if (is_64) 11 else 91;
 const SYS_BRK: u32 = if (is_64) 12 else 45;
 const SYS_IOCTL: u32 = if (is_64) 16 else 54;
 const SYS_ACCESS: u32 = if (is_64) 21 else 33;
-const SYS_PIPE: u32 = if (is_64) 22 else 42;
+const SYS_PIPE: u32 = if (builtin.cpu.arch == .aarch64) 0 else 22;
 const SYS_DUP2: u32 = if (is_64) 33 else 90;
 const SYS_USLEEP: u32 = if (is_64) 35 else 158; // maps to nanosleep on 64-bit
 const SYS_NANOSLEEP: u32 = if (is_64) 35 else 162;
@@ -60,6 +61,8 @@ const SYS_SENDTO: u32 = if (is_64) 44 else 133;
 const SYS_RECVFROM: u32 = if (is_64) 45 else 125;
 const SYS_SENDMSG: u32 = if (is_64) 46 else 146;
 const SYS_RECVMSG: u32 = if (is_64) 47 else 147;
+const SYS_SENDMMSG: u32 = if (builtin.cpu.arch == .aarch64) 269 else 307;
+const SYS_RECVMMSG: u32 = if (builtin.cpu.arch == .aarch64) 243 else 299;
 const SYS_SHUTDOWN: u32 = if (is_64) 48 else 137;
 const SYS_BIND: u32 = if (is_64) 49 else 104;
 const SYS_LISTEN: u32 = if (is_64) 50 else 106;
@@ -69,6 +72,7 @@ const SYS_SOCKETPAIR: u32 = if (is_64) 53 else 135;
 const SYS_SETSOCKOPT: u32 = if (is_64) 54 else 105;
 const SYS_GETSOCKOPT: u32 = if (is_64) 55 else 118;
 const SYS_CLONE: u32 = if (is_64) 56 else 120;
+const SYS_CLONE3: u32 = 435;
 const SYS_FORK: u32 = if (is_64) 57 else 2;
 const SYS_VFORK: u32 = if (is_64) 58 else 190;
 const SYS_EXECVE: u32 = if (is_64) 59 else 11;
@@ -91,7 +95,7 @@ const SYS_MKDIR: u32 = if (is_64) 83 else 39;
 const SYS_RMDIR: u32 = if (is_64) 84 else 40;
 const SYS_CREAT: u32 = if (is_64) 85 else 8;
 const SYS_UNLINK: u32 = if (is_64) 87 else 10;
-const SYS_READLINK: u32 = if (is_64) 89 else 165;
+const SYS_READLINK: u32 = if (builtin.cpu.arch == .aarch64) 0 else 89;
 const SYS_CHMOD: u32 = if (is_64) 90 else 15;
 const SYS_FCHMOD: u32 = if (is_64) 91 else 124;
 const SYS_CHOWN: u32 = if (is_64) 92 else 182;
@@ -114,7 +118,8 @@ const SYS_TGKILL: u32 = if (is_64) 234 else 240;
 const SYS_TKILL: u32 = if (is_64) 200 else 238;
 const SYS_FUTEX: u32 = if (is_64) 202 else 240;
 const SYS_SET_TID_ADDRESS: u32 = if (is_64) 218 else 230;
-const SYS_SET_ROBUST_LIST: u32 = if (is_64) 300 else 231;
+const SYS_SET_ROBUST_LIST: u32 = if (is_64) 273 else 311;
+const SYS_GET_ROBUST_LIST: u32 = if (is_64) 274 else 312;
 const SYS_GETEVENTFD: u32 = if (is_64) 280 else 0; // aarch64 doesn't have eventfd directly
 const SYS_CLOCK_GETTIME: u32 = if (is_64) 228 else 263;
 const SYS_CLOCK_GETRES: u32 = if (is_64) 229 else 264;
@@ -131,13 +136,18 @@ const SYS_RENAMEAT: u32 = if (is_64) 264 else 302;
 const SYS_READLINKAT: u32 = if (is_64) 265 else 296;
 const SYS_FCHMODAT: u32 = if (is_64) 268 else 299;
 const SYS_FCHOWNAT: u32 = if (is_64) 260 else 290;
+const SYS_FACCESSAT: u32 = if (builtin.cpu.arch == .aarch64) 48 else 269;
+const SYS_FACCESSAT2: u32 = 439;
 const SYS_OPENAT2: u32 = if (is_64) 437 else 0; // arm64 may not have this
 const SYS_CLOSE_RANGE: u32 = if (is_64) 436 else 0;
 const SYS_PIDFD_GETFD: u32 = if (is_64) 438 else 438;
+const SYS_IO_URING_SETUP: u32 = 425;
+const SYS_IO_URING_ENTER: u32 = 426;
+const SYS_IO_URING_REGISTER: u32 = 427;
 const SYS_PROCESS_VM_READV: u32 = if (is_64) 310 else 270;
 const SYS_PROCESS_VM_WRITEV: u32 = if (is_64) 311 else 271;
 const SYS_PIPE2: u32 = if (is_64) 293 else 0;
-const SYS_DUP3: u32 = if (is_64) 292 else 0;
+const SYS_DUP3: u32 = if (builtin.cpu.arch == .aarch64) 24 else 292;
 const SYS_EPOLL_CREATE1: u32 = if (is_64) 291 else 20;
 const SYS_ACCEPT4: u32 = if (is_64) 288 else 20;
 const SYS_EVENTFD2: u32 = if (is_64) 290 else 20;
@@ -168,16 +178,29 @@ const SYS_RT_SIGTIMEDWAIT: u32 = if (is_64) 220 else 177;
 const SYS_SIGALTSTACK: u32 = if (is_64) 131 else 185;
 
 // --- Process ---
-const SYS_SETRLIMIT: u32 = if (is_64) 160 else 164;
-const SYS_GETRLIMIT: u32 = if (is_64) 158 else 191;
-const SYS_GETRUSAGE: u32 = if (is_64) 165 else 176;
-const SYS_PRCTL: u32 = if (is_64) 156 else 172;
+const SYS_SETRLIMIT: u32 = if (builtin.cpu.arch == .aarch64) 164 else 160;
+const SYS_GETRLIMIT: u32 = if (builtin.cpu.arch == .aarch64) 163 else 97;
+const SYS_GETRUSAGE: u32 = if (builtin.cpu.arch == .aarch64) 165 else 165;
+const SYS_PRCTL: u32 = if (builtin.cpu.arch == .aarch64) 167 else 157;
 const SYS_SET_MEMPOLICY: u32 = if (is_64) 236 else 260;
-const SYS_ARCH_PRCTL: u32 = if (is_64) 158 else 0; // x86_64 only
+const SYS_ARCH_PRCTL: u32 = if (builtin.cpu.arch == .x86_64) 158 else 0; // x86_64 only
 
 // --- Misc ---
 const SYS_GETRANDOM: u32 = if (is_64) 318 else 278;
 const SYS_SCHED_YIELD: u32 = if (is_64) 24 else 158;
+const SYS_SCHED_SETATTR: u32 = if (is_64) 314 else 380;
+const SYS_SCHED_GETATTR: u32 = if (is_64) 315 else 381;
+const SYS_SCHED_SETAFFINITY: u32 = if (is_64) 203 else 241;
+const SYS_SCHED_GETAFFINITY: u32 = if (is_64) 204 else 242;
+const SYS_SCHED_SETPARAM: u32 = if (builtin.cpu.arch == .aarch64) 118 else 142;
+const SYS_SCHED_GETPARAM: u32 = if (builtin.cpu.arch == .aarch64) 121 else 143;
+const SYS_SCHED_SETSCHEDULER: u32 = if (builtin.cpu.arch == .aarch64) 119 else 144;
+const SYS_SCHED_GETSCHEDULER: u32 = if (builtin.cpu.arch == .aarch64) 120 else 145;
+const SYS_SCHED_GET_PRIORITY_MAX: u32 = if (builtin.cpu.arch == .aarch64) 125 else 146;
+const SYS_SCHED_GET_PRIORITY_MIN: u32 = if (builtin.cpu.arch == .aarch64) 126 else 147;
+const SYS_SETPRIORITY: u32 = if (builtin.cpu.arch == .aarch64) 140 else 141;
+const SYS_GETPRIORITY: u32 = if (builtin.cpu.arch == .aarch64) 141 else 140;
+const SYS_SYSINFO: u32 = if (builtin.cpu.arch == .aarch64) 179 else 99;
 const SYS_RESTART_SYSCALL: u32 = if (is_64) 219 else 0;
 const SYS_RSEQ: u32 = if (is_64) 334 else 293;
 
@@ -189,6 +212,8 @@ const SYS_PKEY_MPROTECT: u32 = if (is_64) 329 else 0;
 // --- Stat variants ---
 const SYS_STAT: u32 = if (is_64) 4 else 189;
 const SYS_LSTAT: u32 = if (is_64) 6 else 190;
+const SYS_STATFS: u32 = if (builtin.cpu.arch == .aarch64) 43 else 137;
+const SYS_FSTATFS: u32 = if (builtin.cpu.arch == .aarch64) 44 else 138;
 
 // --- Event loop & Extended I/O ---
 // aarch64 has no poll(2); syscall 73 there is ppoll(2), so SYS_POLL aliases it.
@@ -203,6 +228,13 @@ const SYS_RENAMEAT2: u32 = if (builtin.cpu.arch == .aarch64) 276 else 316;
 const SYS_LANDLOCK_CREATE_RULESET: u32 = 444;
 const SYS_LANDLOCK_ADD_RULE: u32 = 445;
 const SYS_LANDLOCK_RESTRICT_SELF: u32 = 446;
+const SYS_INOTIFY_INIT1: u32 = if (builtin.cpu.arch == .aarch64) 26 else 294;
+const SYS_INOTIFY_ADD_WATCH: u32 = if (builtin.cpu.arch == .aarch64) 27 else 254;
+const SYS_INOTIFY_RM_WATCH: u32 = if (builtin.cpu.arch == .aarch64) 28 else 255;
+const SYS_TIMERFD_CREATE: u32 = if (builtin.cpu.arch == .aarch64) 85 else 283;
+const SYS_TIMERFD_SETTIME: u32 = if (builtin.cpu.arch == .aarch64) 86 else 286;
+const SYS_TIMERFD_GETTIME: u32 = if (builtin.cpu.arch == .aarch64) 87 else 287;
+const SYS_SIGNALFD4: u32 = if (builtin.cpu.arch == .aarch64) 74 else 289;
 
 // ============================================================================
 // BPF instruction helpers
@@ -233,7 +265,7 @@ fn dedupeSyscalls(comptime nrs: []const u32) []const u32 {
 }
 
 fn buildFilter(comptime nrs: []const u32) [5 + dedupeSyscalls(nrs).len]sock_filter {
-    return buildFilterWithAction(nrs, SECCOMP_RET_KILL);
+    return buildFilterWithAction(nrs, SECCOMP_RET_KILL_PROCESS);
 }
 
 fn buildFilterWithAction(comptime nrs: []const u32, deny_action: u32) [5 + dedupeSyscalls(nrs).len]sock_filter {
@@ -251,31 +283,82 @@ fn buildFilterWithAction(comptime nrs: []const u32, deny_action: u32) [5 + dedup
     return prog;
 }
 
+fn buildWebProcessFilter(deny_action: u32) [10 + dedupeSyscalls(&web_process_syscalls).len]sock_filter {
+    const syscalls = dedupeSyscalls(&web_process_syscalls);
+    const N = syscalls.len;
+    var prog: [10 + N]sock_filter = undefined;
+
+    // Filter layout:
+    // prog[0] = load arch (offset 4)
+    // prog[1] = check arch == native_arch; jf -> idx_deny
+    // prog[2] = load nr (offset 0)
+    // prog[3] = check SYS_CONNECT; jt -> idx_eperm, jf -> 0
+    // prog[4] = check SYS_SOCKET; jt -> 0 (fall through), jf -> 2 (skip socket_inspect)
+    // prog[5] = load args[0] (domain at offset 16 in struct seccomp_data)
+    // prog[6] = check domain == 1 (AF_UNIX); jt -> idx_allow, jf -> idx_eperm
+    // prog[7 .. 7 + N - 1] = check each syscall in web_process_syscalls; jt -> idx_allow, jf -> 0
+    // prog[7 + N] = ret(deny_action) [idx_deny]
+    // prog[8 + N] = ret(SECCOMP_RET_ERRNO | 1) [idx_eperm]
+    // prog[9 + N] = ret(SECCOMP_RET_ALLOW) [idx_allow]
+
+    const idx_deny: usize = 7 + N;
+    const idx_eperm: usize = 8 + N;
+    const idx_allow: usize = 9 + N;
+
+    prog[0] = load(4);
+    prog[1] = check(native_arch, 0, @as(u8, @intCast(idx_deny - 2)));
+    prog[2] = load(0);
+    prog[3] = check(SYS_CONNECT, @as(u8, @intCast(idx_eperm - 4)), 0);
+    prog[4] = check(SYS_SOCKET, 0, 2);
+    prog[5] = load(16);
+    prog[6] = check(1, @as(u8, @intCast(idx_allow - 7)), @as(u8, @intCast(idx_eperm - 7)));
+
+    for (syscalls, 0..) |nr, i| {
+        prog[7 + i] = check(nr, @as(u8, @intCast(idx_allow - (8 + i))), 0);
+    }
+
+    prog[idx_deny] = ret(deny_action);
+    prog[idx_eperm] = ret(SECCOMP_RET_ERRNO | 1);
+    prog[idx_allow] = ret(SECCOMP_RET_ALLOW);
+
+    return prog;
+}
+
 // ============================================================================
 // Per-process syscall allowlists
 // ============================================================================
 
-/// WebProcess (renderer): memory + IPC + filesystem + threads
-const web_process_filter = buildFilter(&[_]u32{
+const web_process_syscalls = [_]u32{
     // Memory management
     SYS_MMAP, SYS_MUNMAP, SYS_MPROTECT, SYS_BRK, SYS_MADVISE,
     SYS_MREMAP, SYS_MSYNC, SYS_MLOCK, SYS_MUNLOCK, SYS_MEMFD_CREATE,
 
     // Basic I/O
     SYS_READ, SYS_WRITE, SYS_CLOSE, SYS_OPENAT, SYS_FSTAT,
-    SYS_NEWFSTATAT, SYS_READLINKAT, SYS_GETDENTS64, SYS_LSEEK,
+    SYS_NEWFSTATAT, SYS_READLINK, SYS_READLINKAT, SYS_GETDENTS64, SYS_LSEEK,
     SYS_PREAD64, SYS_PWRITE64, SYS_READV, SYS_WRITEV,
-    SYS_PREADV, SYS_PWRITEV, SYS_DUP, SYS_DUP2,
+    SYS_PREADV, SYS_PWRITEV, SYS_DUP, SYS_DUP2, SYS_DUP3,
     SYS_FSYNC, SYS_FDATASYNC, SYS_STATX, SYS_FALLOCATE, SYS_FTRUNCATE,
+    SYS_STAT, SYS_LSTAT, SYS_STATFS, SYS_FSTATFS,
     SYS_UNLINK, SYS_UNLINKAT, SYS_RENAME, SYS_RENAMEAT, SYS_RENAMEAT2,
+    SYS_MKDIR, SYS_MKDIRAT,
+    SYS_CHMOD, SYS_FCHMOD, SYS_FCHMODAT,
+    SYS_FLOCK,
+    SYS_FACCESSAT, SYS_FACCESSAT2,
 
     // IPC / event loop
     SYS_EPOLL_CREATE1, SYS_EPOLL_CTL, SYS_EPOLL_WAIT,
-    SYS_PIPE2, SYS_FCNTL, SYS_IOCTL, SYS_EVENTFD2,
+    SYS_PIPE, SYS_PIPE2, SYS_FCNTL, SYS_IOCTL, SYS_EVENTFD2,
     SYS_SOCKETPAIR, SYS_POLL, SYS_PPOLL,
+    SYS_INOTIFY_INIT1, SYS_INOTIFY_ADD_WATCH, SYS_INOTIFY_RM_WATCH,
+    SYS_TIMERFD_CREATE, SYS_TIMERFD_SETTIME, SYS_TIMERFD_GETTIME, SYS_SIGNALFD4,
+
+    // Safe descriptor queries on open Unix domain sockets
+    SYS_GETPEERNAME, SYS_GETSOCKNAME, SYS_GETSOCKOPT, SYS_SETSOCKOPT,
+    SYS_SHUTDOWN, SYS_SENDMSG, SYS_RECVMSG,
 
     // Thread management
-    SYS_CLONE, SYS_SET_TID_ADDRESS, SYS_SET_ROBUST_LIST,
+    SYS_CLONE, SYS_CLONE3, SYS_SET_TID_ADDRESS, SYS_SET_ROBUST_LIST, SYS_GET_ROBUST_LIST,
     SYS_FUTEX, SYS_GETTID, SYS_TGKILL, SYS_TKILL,
 
     // Signals
@@ -291,7 +374,10 @@ const web_process_filter = buildFilter(&[_]u32{
     SYS_PRCTL, SYS_ARCH_PRCTL,
 
     // Misc
-    SYS_GETRANDOM, SYS_SCHED_YIELD, SYS_RSEQ, SYS_RESTART_SYSCALL,
+    SYS_GETRANDOM, SYS_SCHED_YIELD, SYS_SCHED_SETATTR, SYS_SCHED_GETATTR, SYS_SCHED_SETAFFINITY, SYS_SCHED_GETAFFINITY,
+    SYS_SCHED_SETPARAM, SYS_SCHED_GETPARAM, SYS_SCHED_SETSCHEDULER, SYS_SCHED_GETSCHEDULER, SYS_SCHED_GET_PRIORITY_MAX, SYS_SCHED_GET_PRIORITY_MIN,
+    SYS_SETPRIORITY, SYS_GETPRIORITY,
+    SYS_SYSINFO, SYS_UNAME, SYS_RSEQ, SYS_RESTART_SYSCALL,
     SYS_ACCESS, SYS_UMASK,
     SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE,
 
@@ -300,7 +386,10 @@ const web_process_filter = buildFilter(&[_]u32{
 
     // Landlock
     SYS_LANDLOCK_CREATE_RULESET, SYS_LANDLOCK_ADD_RULE, SYS_LANDLOCK_RESTRICT_SELF,
-});
+};
+
+/// WebProcess (renderer): memory + IPC + filesystem + threads
+const web_process_filter = buildWebProcessFilter(SECCOMP_RET_KILL_PROCESS);
 
 /// NetworkProcess: all of web + full networking stack
 const network_process_filter = buildFilter(&[_]u32{
@@ -311,19 +400,30 @@ const network_process_filter = buildFilter(&[_]u32{
 
     // Basic I/O
     SYS_READ, SYS_WRITE, SYS_CLOSE, SYS_OPENAT, SYS_FSTAT,
-    SYS_NEWFSTATAT, SYS_READLINKAT, SYS_GETDENTS64, SYS_LSEEK,
+    SYS_NEWFSTATAT, SYS_READLINK, SYS_READLINKAT, SYS_GETDENTS64, SYS_LSEEK,
     SYS_PREAD64, SYS_PWRITE64, SYS_READV, SYS_WRITEV,
-    SYS_PREADV, SYS_PWRITEV, SYS_DUP, SYS_DUP2,
+    SYS_PREADV, SYS_PWRITEV, SYS_DUP, SYS_DUP2, SYS_DUP3,
     SYS_FSYNC, SYS_FDATASYNC, SYS_STATX, SYS_FALLOCATE, SYS_FTRUNCATE,
+    SYS_STAT, SYS_LSTAT, SYS_STATFS, SYS_FSTATFS,
     SYS_UNLINK, SYS_UNLINKAT, SYS_RENAME, SYS_RENAMEAT, SYS_RENAMEAT2,
+    SYS_MKDIR, SYS_MKDIRAT,
+    SYS_CHMOD, SYS_FCHMOD, SYS_FCHMODAT,
+    SYS_FLOCK,
+    SYS_FACCESSAT, SYS_FACCESSAT2,
 
     // IPC / event loop
     SYS_EPOLL_CREATE1, SYS_EPOLL_CTL, SYS_EPOLL_WAIT,
-    SYS_PIPE2, SYS_FCNTL, SYS_IOCTL, SYS_EVENTFD2,
+    SYS_PIPE, SYS_PIPE2, SYS_FCNTL, SYS_IOCTL, SYS_EVENTFD2,
     SYS_SOCKETPAIR, SYS_POLL, SYS_PPOLL,
+    SYS_INOTIFY_INIT1, SYS_INOTIFY_ADD_WATCH, SYS_INOTIFY_RM_WATCH,
+    SYS_TIMERFD_CREATE, SYS_TIMERFD_SETTIME, SYS_TIMERFD_GETTIME, SYS_SIGNALFD4,
+    SYS_SOCKET, SYS_CONNECT, SYS_GETPEERNAME, SYS_GETSOCKNAME,
+    SYS_SENDTO, SYS_RECVFROM, SYS_SENDMSG, SYS_RECVMSG,
+    SYS_SENDMMSG, SYS_RECVMMSG,
+    SYS_SHUTDOWN, SYS_GETSOCKOPT, SYS_SETSOCKOPT,
 
     // Thread management
-    SYS_CLONE, SYS_SET_TID_ADDRESS, SYS_SET_ROBUST_LIST,
+    SYS_CLONE, SYS_CLONE3, SYS_SET_TID_ADDRESS, SYS_SET_ROBUST_LIST, SYS_GET_ROBUST_LIST,
     SYS_FUTEX, SYS_GETTID, SYS_TGKILL, SYS_TKILL,
 
     // Signals
@@ -339,7 +439,10 @@ const network_process_filter = buildFilter(&[_]u32{
     SYS_PRCTL, SYS_ARCH_PRCTL,
 
     // Misc
-    SYS_GETRANDOM, SYS_SCHED_YIELD, SYS_RSEQ, SYS_RESTART_SYSCALL,
+    SYS_GETRANDOM, SYS_SCHED_YIELD, SYS_SCHED_SETATTR, SYS_SCHED_GETATTR, SYS_SCHED_SETAFFINITY, SYS_SCHED_GETAFFINITY,
+    SYS_SCHED_SETPARAM, SYS_SCHED_GETPARAM, SYS_SCHED_SETSCHEDULER, SYS_SCHED_GETSCHEDULER, SYS_SCHED_GET_PRIORITY_MAX, SYS_SCHED_GET_PRIORITY_MIN,
+    SYS_SETPRIORITY, SYS_GETPRIORITY,
+    SYS_SYSINFO, SYS_UNAME, SYS_RSEQ, SYS_RESTART_SYSCALL,
     SYS_ACCESS, SYS_UMASK,
     SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE,
 
@@ -349,16 +452,14 @@ const network_process_filter = buildFilter(&[_]u32{
     // Landlock
     SYS_LANDLOCK_CREATE_RULESET, SYS_LANDLOCK_ADD_RULE, SYS_LANDLOCK_RESTRICT_SELF,
 
-    // === Networking (additional) ===
-    SYS_SOCKET, SYS_CONNECT, SYS_BIND, SYS_LISTEN,
-    SYS_ACCEPT, SYS_ACCEPT4, SYS_SENDTO, SYS_RECVFROM,
-    SYS_SENDMSG, SYS_RECVMSG, SYS_SHUTDOWN,
-    SYS_GETSOCKNAME, SYS_GETPEERNAME,
-    SYS_SETSOCKOPT, SYS_GETSOCKOPT,
+    // === Networking (additional server/binding syscalls) ===
+    SYS_BIND, SYS_LISTEN,
+    SYS_ACCEPT, SYS_ACCEPT4,
 
     // === Hajr IPC (FD transfer + cross-process read) ===
     SYS_PIDFD_GETFD, SYS_PROCESS_VM_READV, SYS_PROCESS_VM_WRITEV,
     SYS_DUP3, SYS_CLOSE_RANGE,
+    SYS_IO_URING_SETUP, SYS_IO_URING_ENTER, SYS_IO_URING_REGISTER,
 });
 
 /// GPUProcess: minimal — memory + IPC only (closest to original jit_allowed)
@@ -375,7 +476,7 @@ const gpu_process_filter = buildFilter(&[_]u32{
     SYS_PIPE2, SYS_FCNTL, SYS_POLL, SYS_PPOLL, SYS_EVENTFD2,
 
     // Thread management
-    SYS_CLONE, SYS_SET_TID_ADDRESS,
+    SYS_CLONE, SYS_CLONE3, SYS_SET_TID_ADDRESS,
     SYS_FUTEX, SYS_GETTID,
 
     // Signals
@@ -413,46 +514,32 @@ const minimal_filter = buildFilter(&[_]u32{
 // Use during development to discover missing syscall allowlist entries.
 // ============================================================================
 
-const web_process_debug_filter = buildFilterWithAction(&[_]u32{
-    SYS_MMAP, SYS_MUNMAP, SYS_MPROTECT, SYS_BRK, SYS_MADVISE,
-    SYS_MREMAP, SYS_MSYNC, SYS_MLOCK, SYS_MUNLOCK, SYS_MEMFD_CREATE,
-    SYS_READ, SYS_WRITE, SYS_CLOSE, SYS_OPENAT, SYS_FSTAT,
-    SYS_NEWFSTATAT, SYS_READLINKAT, SYS_GETDENTS64, SYS_LSEEK,
-    SYS_PREAD64, SYS_PWRITE64, SYS_READV, SYS_WRITEV,
-    SYS_PREADV, SYS_PWRITEV, SYS_DUP, SYS_DUP2,
-    SYS_FSYNC, SYS_FDATASYNC, SYS_STATX, SYS_FALLOCATE, SYS_FTRUNCATE,
-    SYS_UNLINK, SYS_UNLINKAT, SYS_RENAME, SYS_RENAMEAT, SYS_RENAMEAT2,
-    SYS_EPOLL_CREATE1, SYS_EPOLL_CTL, SYS_EPOLL_WAIT,
-    SYS_PIPE2, SYS_FCNTL, SYS_IOCTL, SYS_EVENTFD2,
-    SYS_SOCKETPAIR, SYS_POLL, SYS_PPOLL,
-    SYS_CLONE, SYS_SET_TID_ADDRESS, SYS_SET_ROBUST_LIST,
-    SYS_FUTEX, SYS_GETTID, SYS_TGKILL, SYS_TKILL,
-    SYS_RT_SIGRETURN, SYS_RT_SIGACTION, SYS_RT_SIGPROCMASK,
-    SYS_SIGALTSTACK,
-    SYS_CLOCK_GETTIME, SYS_GETTIMEOFDAY, SYS_CLOCK_NANOSLEEP,
-    SYS_GETPID, SYS_GETPPID, SYS_GETUID, SYS_GETGID,
-    SYS_GETEUID, SYS_GETEGID, SYS_EXIT_GROUP, SYS_EXIT,
-    SYS_PRCTL, SYS_ARCH_PRCTL,
-    SYS_GETRANDOM, SYS_SCHED_YIELD, SYS_RSEQ, SYS_RESTART_SYSCALL,
-    SYS_ACCESS, SYS_UMASK,
-    SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE,
-    SYS_PKEY_ALLOC, SYS_PKEY_FREE, SYS_PKEY_MPROTECT,
-    SYS_LANDLOCK_CREATE_RULESET, SYS_LANDLOCK_ADD_RULE, SYS_LANDLOCK_RESTRICT_SELF,
-}, SECCOMP_RET_LOG);
+const web_process_debug_filter = buildWebProcessFilter(SECCOMP_RET_LOG);
 
 const network_process_debug_filter = buildFilterWithAction(&[_]u32{
     SYS_MMAP, SYS_MUNMAP, SYS_MPROTECT, SYS_BRK, SYS_MADVISE,
     SYS_MREMAP, SYS_MSYNC, SYS_MLOCK, SYS_MUNLOCK, SYS_MEMFD_CREATE,
     SYS_READ, SYS_WRITE, SYS_CLOSE, SYS_OPENAT, SYS_FSTAT,
-    SYS_NEWFSTATAT, SYS_READLINKAT, SYS_GETDENTS64, SYS_LSEEK,
+    SYS_NEWFSTATAT, SYS_READLINK, SYS_READLINKAT, SYS_GETDENTS64, SYS_LSEEK,
     SYS_PREAD64, SYS_PWRITE64, SYS_READV, SYS_WRITEV,
-    SYS_PREADV, SYS_PWRITEV, SYS_DUP, SYS_DUP2,
+    SYS_PREADV, SYS_PWRITEV, SYS_DUP, SYS_DUP2, SYS_DUP3,
     SYS_FSYNC, SYS_FDATASYNC, SYS_STATX, SYS_FALLOCATE, SYS_FTRUNCATE,
+    SYS_STAT, SYS_LSTAT, SYS_STATFS, SYS_FSTATFS,
     SYS_UNLINK, SYS_UNLINKAT, SYS_RENAME, SYS_RENAMEAT, SYS_RENAMEAT2,
+    SYS_MKDIR, SYS_MKDIRAT,
+    SYS_CHMOD, SYS_FCHMOD, SYS_FCHMODAT,
+    SYS_FLOCK,
+    SYS_FACCESSAT, SYS_FACCESSAT2,
     SYS_EPOLL_CREATE1, SYS_EPOLL_CTL, SYS_EPOLL_WAIT,
-    SYS_PIPE2, SYS_FCNTL, SYS_IOCTL, SYS_EVENTFD2,
+    SYS_PIPE, SYS_PIPE2, SYS_FCNTL, SYS_IOCTL, SYS_EVENTFD2,
     SYS_SOCKETPAIR, SYS_POLL, SYS_PPOLL,
-    SYS_CLONE, SYS_SET_TID_ADDRESS, SYS_SET_ROBUST_LIST,
+    SYS_INOTIFY_INIT1, SYS_INOTIFY_ADD_WATCH, SYS_INOTIFY_RM_WATCH,
+    SYS_TIMERFD_CREATE, SYS_TIMERFD_SETTIME, SYS_TIMERFD_GETTIME, SYS_SIGNALFD4,
+    SYS_SOCKET, SYS_CONNECT, SYS_GETPEERNAME, SYS_GETSOCKNAME,
+    SYS_SENDTO, SYS_RECVFROM, SYS_SENDMSG, SYS_RECVMSG,
+    SYS_SENDMMSG, SYS_RECVMMSG,
+    SYS_SHUTDOWN, SYS_GETSOCKOPT, SYS_SETSOCKOPT,
+    SYS_CLONE, SYS_CLONE3, SYS_SET_TID_ADDRESS, SYS_SET_ROBUST_LIST, SYS_GET_ROBUST_LIST,
     SYS_FUTEX, SYS_GETTID, SYS_TGKILL, SYS_TKILL,
     SYS_RT_SIGRETURN, SYS_RT_SIGACTION, SYS_RT_SIGPROCMASK,
     SYS_SIGALTSTACK,
@@ -460,20 +547,22 @@ const network_process_debug_filter = buildFilterWithAction(&[_]u32{
     SYS_GETPID, SYS_GETPPID, SYS_GETUID, SYS_GETGID,
     SYS_GETEUID, SYS_GETEGID, SYS_EXIT_GROUP, SYS_EXIT,
     SYS_PRCTL, SYS_ARCH_PRCTL,
-    SYS_GETRANDOM, SYS_SCHED_YIELD, SYS_RSEQ, SYS_RESTART_SYSCALL,
+    SYS_GETRANDOM, SYS_SCHED_YIELD, SYS_SCHED_SETATTR, SYS_SCHED_GETATTR, SYS_SCHED_SETAFFINITY, SYS_SCHED_GETAFFINITY,
+    SYS_SCHED_SETPARAM, SYS_SCHED_GETPARAM, SYS_SCHED_SETSCHEDULER, SYS_SCHED_GETSCHEDULER, SYS_SCHED_GET_PRIORITY_MAX, SYS_SCHED_GET_PRIORITY_MIN,
+    SYS_SETPRIORITY, SYS_GETPRIORITY,
+    SYS_SYSINFO, SYS_UNAME, SYS_RSEQ, SYS_RESTART_SYSCALL,
     SYS_ACCESS, SYS_UMASK,
     SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE,
     SYS_PKEY_ALLOC, SYS_PKEY_FREE, SYS_PKEY_MPROTECT,
     SYS_LANDLOCK_CREATE_RULESET, SYS_LANDLOCK_ADD_RULE, SYS_LANDLOCK_RESTRICT_SELF,
-    SYS_SOCKET, SYS_CONNECT, SYS_BIND, SYS_LISTEN,
-    SYS_ACCEPT, SYS_ACCEPT4, SYS_SENDTO, SYS_RECVFROM,
-    SYS_SENDMSG, SYS_RECVMSG, SYS_SHUTDOWN,
-    SYS_GETSOCKNAME, SYS_GETPEERNAME,
-    SYS_SETSOCKOPT, SYS_GETSOCKOPT,
+    // === Networking (additional server/binding syscalls) ===
+    SYS_BIND, SYS_LISTEN,
+    SYS_ACCEPT, SYS_ACCEPT4,
 
     // === Hajr IPC (FD transfer + cross-process read) ===
     SYS_PIDFD_GETFD, SYS_PROCESS_VM_READV, SYS_PROCESS_VM_WRITEV,
     SYS_DUP3, SYS_CLOSE_RANGE,
+    SYS_IO_URING_SETUP, SYS_IO_URING_ENTER, SYS_IO_URING_REGISTER,
 }, SECCOMP_RET_LOG);
 
 const gpu_process_debug_filter = buildFilterWithAction(&[_]u32{
@@ -482,7 +571,7 @@ const gpu_process_debug_filter = buildFilterWithAction(&[_]u32{
     SYS_IOCTL,
     SYS_EPOLL_CREATE1, SYS_EPOLL_CTL, SYS_EPOLL_WAIT,
     SYS_PIPE2, SYS_FCNTL, SYS_POLL, SYS_PPOLL, SYS_EVENTFD2,
-    SYS_CLONE, SYS_SET_TID_ADDRESS,
+    SYS_CLONE, SYS_CLONE3, SYS_SET_TID_ADDRESS,
     SYS_FUTEX, SYS_GETTID,
     SYS_RT_SIGRETURN, SYS_RT_SIGACTION,
     SYS_RT_SIGPROCMASK, SYS_SIGALTSTACK,
@@ -574,7 +663,7 @@ test "seccomp syscall constants — aarch64 values" {
     try std.testing.expectEqual(@as(u32, 438), SYS_PIDFD_GETFD);
     try std.testing.expectEqual(@as(u32, 270), SYS_PROCESS_VM_READV);
     try std.testing.expectEqual(@as(u32, 271), SYS_PROCESS_VM_WRITEV);
-    try std.testing.expectEqual(@as(u32, 292), SYS_DUP3);
+    try std.testing.expectEqual(@as(u32, 24), SYS_DUP3);
     try std.testing.expectEqual(@as(u32, 436), SYS_CLOSE_RANGE);
 }
 
@@ -638,6 +727,26 @@ test "seccomp network filter — contains core Hajr syscalls" {
     try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_SOCKETPAIR));
 }
 
+test "seccomp web and network filters — contain inotify syscalls" {
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_INOTIFY_INIT1));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_INOTIFY_ADD_WATCH));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_INOTIFY_RM_WATCH));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_INOTIFY_INIT1));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_INOTIFY_ADD_WATCH));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_INOTIFY_RM_WATCH));
+}
+
+test "seccomp web and network filters — contain timerfd and signalfd syscalls" {
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_TIMERFD_CREATE));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_TIMERFD_SETTIME));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_TIMERFD_GETTIME));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_SIGNALFD4));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_TIMERFD_CREATE));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_TIMERFD_SETTIME));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_TIMERFD_GETTIME));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_SIGNALFD4));
+}
+
 test "seccomp network filter — size ordering" {
     // network > web > gpu > minimal
     try std.testing.expect(network_process_filter.len > web_process_filter.len);
@@ -650,20 +759,26 @@ test "seccomp network filter — size ordering" {
 }
 
 test "seccomp web filter — MUST NOT contain networking syscalls" {
-    // Web process should never open raw sockets
-    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_SOCKET));
-    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_CONNECT));
+    // Web process must not listen/bind server ports or raw networking send/recv
     try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_BIND));
     try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_LISTEN));
     try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_ACCEPT));
     try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_ACCEPT4));
     try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_SENDTO));
     try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_RECVFROM));
-    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_SENDMSG));
-    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_RECVMSG));
-    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_SHUTDOWN));
-    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_GETSOCKNAME));
-    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_GETPEERNAME));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_SENDMMSG));
+    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_RECVMMSG));
+    // Safe descriptor queries on open Unix domain sockets ARE retained
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_GETPEERNAME));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_GETSOCKNAME));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_GETSOCKOPT));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_SETSOCKOPT));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_SHUTDOWN));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_SENDMSG));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_RECVMSG));
+    // Socket domain inspection & connect EPERM
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_SOCKET));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_CONNECT));
 }
 
 test "seccomp web filter — MUST NOT contain Hajr IPC syscalls" {
@@ -775,9 +890,53 @@ test "seccomp network filter — MUST contain all core syscalls" {
     try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_PKEY_MPROTECT));
 }
 
+test "seccomp web and network filters — contain extended I/O syscalls" {
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_READLINK));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_FACCESSAT));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_FACCESSAT2));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_DUP3));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_PIPE));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_FLOCK));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_MKDIR));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_MKDIRAT));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_SETPRIORITY));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_GETPRIORITY));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_CHMOD));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_FCHMOD));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_FCHMODAT));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_UNAME));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_READLINK));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_FACCESSAT));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_FACCESSAT2));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_DUP3));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_PIPE));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_FLOCK));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_MKDIR));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_MKDIRAT));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_CHMOD));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_FCHMOD));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_FCHMODAT));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_SETPRIORITY));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_GETPRIORITY));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_SENDMMSG));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_RECVMMSG));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_UNAME));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_IO_URING_SETUP));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_IO_URING_ENTER));
+    try std.testing.expect(scanBpfForSyscall(&network_process_filter, SYS_IO_URING_REGISTER));
+    try std.testing.expect(scanBpfForSyscall(&network_process_debug_filter, SYS_IO_URING_SETUP));
+    try std.testing.expect(scanBpfForSyscall(&network_process_debug_filter, SYS_IO_URING_ENTER));
+    try std.testing.expect(scanBpfForSyscall(&network_process_debug_filter, SYS_IO_URING_REGISTER));
+    try std.testing.expect(scanBpfForSyscall(&network_process_debug_filter, SYS_SENDMMSG));
+    try std.testing.expect(scanBpfForSyscall(&network_process_debug_filter, SYS_RECVMMSG));
+    try std.testing.expect(scanBpfForSyscall(&network_process_debug_filter, SYS_SETPRIORITY));
+    try std.testing.expect(scanBpfForSyscall(&network_process_debug_filter, SYS_GETPRIORITY));
+}
+
 test "seccomp filter layout — web process" {
     try std.testing.expect(web_process_filter.len > 0);
     try std.testing.expect(web_process_filter[web_process_filter.len - 1].k == SECCOMP_RET_ALLOW);
-    try std.testing.expect(web_process_filter[web_process_filter.len - 2].k == SECCOMP_RET_KILL);
+    try std.testing.expect(web_process_filter[web_process_filter.len - 2].k == (SECCOMP_RET_ERRNO | 1));
+    try std.testing.expect(web_process_filter[web_process_filter.len - 3].k == SECCOMP_RET_KILL_PROCESS);
     try std.testing.expectEqual(@as(u8, 0), web_process_filter[1].jt);
 }

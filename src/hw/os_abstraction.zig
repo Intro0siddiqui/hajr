@@ -406,6 +406,8 @@ pub const LockdownError = error{
     SeccompFailed,
     LandlockNotSupported,
     LandlockFailed,
+    LandlockRuleFailed,
+    PathOpenFailed,
     KernelTooOld,
     SandboxInitFailed,
     MitigationPolicyFailed,
@@ -415,22 +417,45 @@ pub const LockdownError = error{
 
 /// Per-process Landlock path rules for Linux.
 const web_landlock_rules = if (builtin.os.tag == .linux) &[_]@import("landlock.zig").PathRule{
-    // Fonts
-    .{ .path = "/usr/share/fonts", .read = true },
-    .{ .path = "/usr/local/share/fonts", .read = true },
+    // Shared libraries & dlopen (Mesa, injected bundle, codecs)
+    .{ .path = "/usr/lib", .read = true },
+    .{ .path = "/usr/lib64", .read = true },
+    .{ .path = "/lib", .read = true },
+    .{ .path = "/home/intro/spectre-enviroment/browser/zawra-browser/webkit/build/lib", .read = true },
+    .{ .path = "/home/intro/spectre-enviroment/browser/zawra-browser/webkit/build/bin", .read = true },
+    // Fonts and desktop assets
+    .{ .path = "/usr/share", .read = true },
+    .{ .path = "/usr/local/share", .read = true },
     .{ .path = "/etc/fonts", .read = true },
     // DNS resolution
     .{ .path = "/etc/resolv.conf", .read = true },
     .{ .path = "/etc/hosts", .read = true },
+    // Standard devices & shared memory
+    .{ .path = "/dev/null", .read = true, .write = true },
+    .{ .path = "/dev/urandom", .read = true },
+    .{ .path = "/dev/shm", .read = true, .write = true },
+    // GPU device access & Mesa/DRM/Vulkan device nodes
+    .{ .path = "/dev/dri", .read = true, .write = true },
+    .{ .path = "/etc/vulkan", .read = true },
+    .{ .path = "/sys/dev/char", .read = true },
+    .{ .path = "/sys/devices", .read = true },
     // Profile + caches
+    .{ .path = "/home/intro/.zawra", .read = true, .write = true },
     .{ .path = "/tmp/zawra-profile", .read = true, .write = true },
     .{ .path = "/tmp", .read = true, .write = true },
 } else undefined;
 
 const network_landlock_rules = if (builtin.os.tag == .linux) &[_]@import("landlock.zig").PathRule{
     // Profile + caches
+    .{ .path = "/home/intro/.zawra", .read = true, .write = true },
     .{ .path = "/tmp/zawra-profile", .read = true, .write = true },
     .{ .path = "/tmp", .read = true, .write = true },
+    // Standard devices
+    .{ .path = "/dev/null", .read = true, .write = true },
+    .{ .path = "/dev/urandom", .read = true },
+    .{ .path = "/dev/random", .read = true },
+    // Assets & system certs
+    .{ .path = "/usr/share", .read = true },
     // DNS resolution
     .{ .path = "/etc/resolv.conf", .read = true },
     .{ .path = "/etc/hosts", .read = true },
@@ -441,10 +466,15 @@ const network_landlock_rules = if (builtin.os.tag == .linux) &[_]@import("landlo
 } else undefined;
 
 const gpu_landlock_rules = if (builtin.os.tag == .linux) &[_]@import("landlock.zig").PathRule{
-    // GPU device access
+    // GPU device access & shared memory
     .{ .path = "/dev/dri", .read = true, .write = true },
+    .{ .path = "/dev/shm", .read = true, .write = true },
+    .{ .path = "/dev/null", .read = true, .write = true },
+    .{ .path = "/usr/share", .read = true },
+    .{ .path = "/etc/vulkan", .read = true },
     // Profile
     .{ .path = "/tmp/zawra-profile", .read = true, .write = true },
+    .{ .path = "/tmp", .read = true, .write = true },
 } else undefined;
 
 /// Seal the current process for all future operations.
@@ -478,8 +508,11 @@ pub fn sealProcess(process_type: ProcessType, debug: bool) LockdownError!void {
             // Apply Landlock first so its ruleset creation and restrictions occur before Seccomp BPF filters engage.
             // A kernel without Landlock support must not abort sealing: fall through to Seccomp.
             landlock.denyWithExceptions(rules) catch |err| switch (err) {
-                error.LandlockNotSupported => {},
-                else => return err,
+                error.LandlockNotSupported, error.KernelTooOld => {},
+                else => {
+                    std.debug.print("[HAJR-OS] ERROR: landlock.denyWithExceptions failed: {}\n", .{err});
+                    return err;
+                },
             };
 
             const filter_kind: seccomp.FilterKind = if (debug) switch (process_type) {

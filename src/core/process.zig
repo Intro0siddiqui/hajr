@@ -10,6 +10,21 @@ pub const SpawnError = error{
     UnsupportedPlatform,
 };
 
+pub const ExitPacket = extern struct {
+    pid: u32,
+    status: u32,
+};
+
+pub var g_supervisor_status_fds: [8]i32 = [_]i32{-1} ** 8;
+pub var g_last_supervisor_status_fd: i32 = -1;
+
+pub fn getSupervisorStatusFd(process_type: u32) i32 {
+    if (process_type < g_supervisor_status_fds.len and g_supervisor_status_fds[process_type] != -1) {
+        return g_supervisor_status_fds[process_type];
+    }
+    return g_last_supervisor_status_fd;
+}
+
 pub fn spawnCompartment(
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -41,13 +56,27 @@ pub fn spawnCompartment(
         // Inherit parent's environment so child gets ZAWRA_HAJR_* vars for IPC bootstrap
         const envp: [*:null]?[*:0]const u8 = @ptrCast(std.c.environ);
 
+        // Create status pipe for PID 1 supervisor to report child exit status to UI process
+        var status_pipe: [2]i32 = [_]i32{ -1, -1 };
+        const res_pipe = std.os.linux.pipe2(&status_pipe, .{ .CLOEXEC = true });
+        const pipe_ok = (std.os.linux.errno(res_pipe) == .SUCCESS);
+
         // On Linux, we use namespaces and MPK
         const res_fork = std.os.linux.syscall0(.fork);
-        if (std.os.linux.errno(res_fork) != .SUCCESS) return error.SpawnFailed;
+        if (std.os.linux.errno(res_fork) != .SUCCESS) {
+            if (pipe_ok) {
+                _ = std.os.linux.syscall1(.close, @as(usize, @bitCast(@as(isize, status_pipe[0]))));
+                _ = std.os.linux.syscall1(.close, @as(usize, @bitCast(@as(isize, status_pipe[1]))));
+            }
+            return error.SpawnFailed;
+        }
         const pid = res_fork;
         
         if (pid == 0) {
             // Child process - ONLY ASYNC-SIGNAL-SAFE CODE HERE
+            if (pipe_ok) {
+                _ = std.os.linux.syscall1(.close, @as(usize, @bitCast(@as(isize, status_pipe[0]))));
+            }
 
             // Kill this intermediate child if the UIProcess dies.
             // PR_SET_PDEATHSIG = 1, SIGKILL = 9
@@ -183,14 +212,81 @@ pub fn spawnCompartment(
                 hw.os.exitProcess(1);
             }
             if (res_fork2 != 0) {
-                // Intermediate child: wait for grandchild and exit
-                _ = std.os.linux.syscall4(.wait4, res_fork2, 0, 0, 0);
-                hw.os.exitProcess(0);
+                // Intermediate child: close write end of status pipe so supervisor is sole writer
+                if (pipe_ok) {
+                    _ = std.os.linux.syscall1(.close, @as(usize, @bitCast(@as(isize, status_pipe[1]))));
+                }
+                // Intermediate child: wait for grandchild (PID 1 supervisor) and forward exit status
+                var status_mid: u32 = 0;
+                _ = std.os.linux.syscall4(.wait4, res_fork2, @intFromPtr(&status_mid), 0, 0);
+                if (std.posix.W.IFEXITED(status_mid)) {
+                    hw.os.exitProcess(std.posix.W.EXITSTATUS(status_mid));
+                } else if (std.posix.W.IFSIGNALED(status_mid)) {
+                    const sig_mid = @intFromEnum(std.posix.W.TERMSIG(status_mid));
+                    hw.os.exitProcess(128 + @as(u8, @truncate(sig_mid)));
+                } else {
+                    hw.os.exitProcess(1);
+                }
             }
             // Grandchild continues here as PID 1 in new PID namespace
 
-            // Kill this grandchild if the intermediate child dies.
+            // Kill this supervisor if the intermediate child dies.
             _ = std.os.linux.syscall2(.prctl, 1, 9); // PR_SET_PDEATHSIG=1, SIGKILL=9
+
+            // Do NOT execve untrusted WebKit binary as PID 1 (prevents Linux PID 1 signal immunity).
+            // Instead, PID 1 acts as a minimal Supervisor: forks PID 2, wait4, forwards exit status.
+            const res_fork3 = std.os.linux.syscall0(.fork);
+            if (std.os.linux.errno(res_fork3) != .SUCCESS) {
+                const err_msg = "[HAJR-SUPERVISOR] FATAL: third fork for PID 2 failed\n";
+                _ = std.os.linux.syscall3(.write, 2, @intFromPtr(err_msg.ptr), err_msg.len);
+                hw.os.exitProcess(1);
+            }
+            if (res_fork3 != 0) {
+                // === PID 1 Supervisor ===
+                const pid2 = res_fork3;
+                var status_child: u32 = 0;
+                _ = std.os.linux.syscall4(.wait4, pid2, @intFromPtr(&status_child), 0, 0);
+
+                if (pipe_ok) {
+                    const packet = ExitPacket{
+                        .pid = @as(u32, @intCast(pid2)),
+                        .status = status_child,
+                    };
+                    _ = std.os.linux.syscall3(
+                        .write,
+                        @as(usize, @bitCast(@as(isize, status_pipe[1]))),
+                        @intFromPtr(&packet),
+                        @sizeOf(ExitPacket),
+                    );
+                    _ = std.os.linux.syscall1(.close, @as(usize, @bitCast(@as(isize, status_pipe[1]))));
+                }
+
+                if (std.posix.W.IFSIGNALED(status_child)) {
+                    const sig = @intFromEnum(std.posix.W.TERMSIG(status_child));
+                    var diag_buf: [256]u8 = undefined;
+                    const diag_msg = std.fmt.bufPrint(
+                        &diag_buf,
+                        "[HAJR-SUPERVISOR] Process {s} (PID 2) terminated by signal {d}\n",
+                        .{ path, sig },
+                    ) catch "[HAJR-SUPERVISOR] Process (PID 2) terminated by signal\n";
+                    _ = std.os.linux.syscall3(.write, 2, @intFromPtr(diag_msg.ptr), diag_msg.len);
+                    hw.os.exitProcess(128 + @as(u8, @truncate(sig)));
+                } else if (std.posix.W.IFEXITED(status_child)) {
+                    const exit_code = std.posix.W.EXITSTATUS(status_child);
+                    hw.os.exitProcess(exit_code);
+                } else {
+                    hw.os.exitProcess(1);
+                }
+            }
+
+            // === PID 2 Child ===
+            // Kill PID 2 if PID 1 supervisor dies.
+            _ = std.os.linux.syscall2(.prctl, 1, 9); // PR_SET_PDEATHSIG=1, SIGKILL=9
+
+            // Explicitly close write end of status pipe in PID 2 before execve
+            if (pipe_ok) {
+                _ = std.os.linux.syscall1(.close, @as(usize, @bitCast(@as(isize, status_pipe[1]))));
+            }
 
             // 2. Preserve the socket FD (signal1_fd)
             if (out_socket.* != -1) {
@@ -241,6 +337,22 @@ pub fn spawnCompartment(
             hw.os.exitProcess(1);
         } else {
             // Parent process
+            if (pipe_ok) {
+                _ = std.os.linux.syscall1(.close, @as(usize, @bitCast(@as(isize, status_pipe[1]))));
+
+                var proc_idx: ?usize = null;
+                if (std.mem.indexOf(u8, path, "WebProcess") != null) {
+                    proc_idx = 0;
+                } else if (std.mem.indexOf(u8, path, "NetworkProcess") != null) {
+                    proc_idx = 1;
+                } else if (std.mem.indexOf(u8, path, "GPUProcess") != null) {
+                    proc_idx = 2;
+                }
+                if (proc_idx) |idx| {
+                    g_supervisor_status_fds[idx] = status_pipe[0];
+                }
+                g_last_supervisor_status_fd = status_pipe[0];
+            }
             return @intCast(pid);
         }
     } else if (comptime builtin.os.tag == .macos) {

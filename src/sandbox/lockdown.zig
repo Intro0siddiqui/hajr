@@ -11,18 +11,8 @@ pub const LockdownConfig = struct {
     reduce_integrity: bool = true,
 };
 
-pub const LockdownError = error{
-    UnsupportedPlatform,
-    PrctlFailed,
-    SeccompFailed,
-    LandlockNotSupported,
-    LandlockFailed,
-    KernelTooOld,
-    SandboxInitFailed,
-    MitigationPolicyFailed,
-    TokenOpenFailed,
+pub const LockdownError = os_abstraction.LockdownError || error{
     AlreadyLocked,
-    OutOfMemory,
 };
 
 var locked: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);

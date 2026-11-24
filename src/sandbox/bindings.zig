@@ -994,6 +994,10 @@ export fn hajr_spawn_compartment(
     return @intCast(pid);
 }
 
+export fn hajr_get_supervisor_status_fd(process_type: u32) callconv(.c) i32 {
+    return process.getSupervisorStatusFd(process_type);
+}
+
 // ============================================================================
 // CRC32 Checksum FFI for IPC Message Integrity
 // ============================================================================
