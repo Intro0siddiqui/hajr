@@ -97,6 +97,20 @@ pub const RingSlot = struct {
     payload: [MAX_MESSAGE_SIZE - @sizeOf(IpcHeader)]u8,
 };
 
+/// Maximum wait iterations before timing out on a full/empty ring
+const MAX_WAIT_ITERS: usize = 1000;
+
+/// Progressive backoff for wait loops: bounded spin -> yield -> 100µs sleep
+fn backoffWait(iter: usize) void {
+    if (iter < 64) {
+        std.atomic.spinLoopHint();
+    } else if (iter < 256) {
+        std.Thread.yield() catch {};
+    } else {
+        hw.posix_io.sleepNs(100_000);
+    }
+}
+
 /// Lock-free IPC ring buffer
 pub const IpcRing = struct {
     /// Ring slots
@@ -156,18 +170,36 @@ pub const IpcRing = struct {
             return error.PayloadTooLarge;
         }
         
-        // Get current head and advance
-        const head = ring.head.fetchAdd(1, .acq_rel);
-        const slot_idx = head % ring.slots.len;
-        
-        // Wait for slot to be free
+        // Reserve a slot via CAS only when capacity is available (prevents leaking head on RingFull)
+        var head = ring.head.load(.acquire);
         var waited: usize = 0;
+        while (true) {
+            const tail = ring.tail.load(.acquire);
+            if (head -% tail >= ring.slots.len) {
+                if (waited >= MAX_WAIT_ITERS) {
+                    return error.RingFull;
+                }
+                backoffWait(waited);
+                waited += 1;
+                head = ring.head.load(.acquire);
+                continue;
+            }
+            if (ring.head.cmpxchgWeak(head, head +% 1, .acq_rel, .acquire)) |actual_head| {
+                head = actual_head;
+            } else {
+                break;
+            }
+        }
+        const slot_idx = head % ring.slots.len;
+
+        // Wait for slot to be marked free by consumer
+        waited = 0;
         while (ring.slots[slot_idx].occupied.load(.acquire)) {
-            if (waited > 1000000) {
+            if (waited >= MAX_WAIT_ITERS) {
                 return error.RingFull;
             }
+            backoffWait(waited);
             waited += 1;
-            std.atomic.spinLoopHint();
         }
         
         // Fill slot
@@ -199,11 +231,11 @@ pub const IpcRing = struct {
         // Wait for slot to be occupied
         var waited: usize = 0;
         while (!slot.occupied.load(.acquire)) {
-            if (waited > 1000000) {
+            if (waited >= MAX_WAIT_ITERS) {
                 return error.RingEmpty;
             }
+            backoffWait(waited);
             waited += 1;
-            std.atomic.spinLoopHint();
         }
         
         // Read header and payload BEFORE advancing tail
@@ -389,8 +421,10 @@ pub const IpcRouter = struct {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         defer buf.deinit(router.allocator);
         
+        var idle_iters: usize = 0;
         while (!router.shutdown.load(.acquire)) {
             if (router.inbound.available() > 0) {
+                idle_iters = 0;
                 const header = router.inbound.recv(router.allocator, &buf) catch continue;
                 
                 // Route message to appropriate channel
@@ -403,10 +437,11 @@ pub const IpcRouter = struct {
                         buf.items,
                     ) catch {};
                 }
+            } else {
+                // Progressive backoff to avoid busy-waiting when idle
+                backoffWait(idle_iters);
+                idle_iters +|= 1;
             }
-            
-            // Yield to avoid busy-waiting
-            std.atomic.spinLoopHint();
         }
     }
     
@@ -491,4 +526,35 @@ test "IpcRouter channel management" {
     try std.testing.expect(router.channels.count() == 0);
     
     channel.destroy();
+}
+
+test "IpcRing send does not leak head on RingFull" {
+    const ring = try IpcRing.create(4, .{ .value = 1, .tier = 1 }, .trusted, .untrusted);
+    defer ring.destroy();
+
+    // Fill all 4 slots
+    for (0..4) |i| {
+        const msg = [_]u8{@as(u8, @intCast(i))};
+        try ring.send(.execute, 1, 2, &msg);
+    }
+    try std.testing.expectEqual(@as(usize, 4), ring.available());
+
+    // Attempting to send into a full ring must return RingFull without advancing head
+    try std.testing.expectError(error.RingFull, ring.send(.execute, 1, 2, "overflow"));
+    try std.testing.expectEqual(@as(u64, 4), ring.head.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 4), ring.available());
+
+    // Drain one message and verify a subsequent send succeeds and order is preserved
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+
+    _ = try ring.recv(std.testing.allocator, &buf);
+    try std.testing.expectEqualSlices(u8, &[_]u8{0}, buf.items);
+
+    try ring.send(.execute, 1, 2, &[_]u8{4});
+    for (1..5) |i| {
+        _ = try ring.recv(std.testing.allocator, &buf);
+        try std.testing.expectEqualSlices(u8, &[_]u8{@as(u8, @intCast(i))}, buf.items);
+    }
+    try std.testing.expectEqual(@as(usize, 0), ring.available());
 }
