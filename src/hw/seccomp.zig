@@ -22,6 +22,7 @@ const SECCOMP_RET_ERRNO: u32 = 0x00050000;
 const SECCOMP_RET_LOG: u32 = 0x7ffc0000; // Allow + log to audit (for debugging)
 const SECCOMP_SET_MODE_FILTER: u64 = 1;
 const SECCOMP_FILTER_FLAG_TSYNC: u64 = 1;
+const SECCOMP_FILTER_FLAG_LOG: u64 = 2;
 const PR_SET_NO_NEW_PRIVS: u64 = 38;
 
 const native_arch: u32 = switch (builtin.cpu.arch) {
@@ -105,6 +106,8 @@ const SYS_GETUID: u32 = if (is_64) 102 else 24;
 const SYS_GETGID: u32 = if (is_64) 104 else 47;
 const SYS_GETEUID: u32 = if (is_64) 107 else 31;
 const SYS_GETEGID: u32 = if (is_64) 108 else 49;
+const SYS_GETRESUID: u32 = if (builtin.cpu.arch == .aarch64) 148 else if (is_64) 118 else 165;
+const SYS_GETRESGID: u32 = if (builtin.cpu.arch == .aarch64) 150 else if (is_64) 120 else 171;
 const SYS_SETUID: u32 = if (is_64) 105 else 23;
 const SYS_SETGID: u32 = if (is_64) 106 else 46;
 const SYS_GETPGID: u32 = if (is_64) 121 else 45;
@@ -122,6 +125,9 @@ const SYS_SET_ROBUST_LIST: u32 = if (is_64) 273 else 311;
 const SYS_GET_ROBUST_LIST: u32 = if (is_64) 274 else 312;
 const SYS_GETEVENTFD: u32 = if (is_64) 280 else 0; // aarch64 doesn't have eventfd directly
 const SYS_CLOCK_GETTIME: u32 = if (is_64) 228 else 263;
+const SYS_UTIMENSAT: u32 = if (builtin.cpu.arch == .aarch64) 88 else if (is_64) 280 else 320;
+const SYS_PRLIMIT64: u32 = if (builtin.cpu.arch == .aarch64) 261 else if (is_64) 302 else 340;
+const SYS_RT_SIGSUSPEND: u32 = if (builtin.cpu.arch == .aarch64) 133 else if (is_64) 130 else 179;
 const SYS_CLOCK_GETRES: u32 = if (is_64) 229 else 264;
 const SYS_CLOCK_NANOSLEEP: u32 = if (is_64) 230 else 267;
 const SYS_EXIT_GROUP: u32 = if (is_64) 231 else 248;
@@ -283,38 +289,36 @@ fn buildFilterWithAction(comptime nrs: []const u32, deny_action: u32) [5 + dedup
     return prog;
 }
 
-fn buildWebProcessFilter(deny_action: u32) [10 + dedupeSyscalls(&web_process_syscalls).len]sock_filter {
+fn buildWebProcessFilter(deny_action: u32) [9 + dedupeSyscalls(&web_process_syscalls).len]sock_filter {
     const syscalls = dedupeSyscalls(&web_process_syscalls);
     const N = syscalls.len;
-    var prog: [10 + N]sock_filter = undefined;
+    var prog: [9 + N]sock_filter = undefined;
 
     // Filter layout:
     // prog[0] = load arch (offset 4)
     // prog[1] = check arch == native_arch; jf -> idx_deny
     // prog[2] = load nr (offset 0)
-    // prog[3] = check SYS_CONNECT; jt -> idx_eperm, jf -> 0
-    // prog[4] = check SYS_SOCKET; jt -> 0 (fall through), jf -> 2 (skip socket_inspect)
-    // prog[5] = load args[0] (domain at offset 16 in struct seccomp_data)
-    // prog[6] = check domain == 1 (AF_UNIX); jt -> idx_allow, jf -> idx_eperm
-    // prog[7 .. 7 + N - 1] = check each syscall in web_process_syscalls; jt -> idx_allow, jf -> 0
-    // prog[7 + N] = ret(deny_action) [idx_deny]
-    // prog[8 + N] = ret(SECCOMP_RET_ERRNO | 1) [idx_eperm]
-    // prog[9 + N] = ret(SECCOMP_RET_ALLOW) [idx_allow]
+    // prog[3] = check SYS_SOCKET; jt -> 0 (fall through), jf -> 2 (skip socket_inspect)
+    // prog[4] = load args[0] (domain at offset 16 in struct seccomp_data)
+    // prog[5] = check domain == 1 (AF_UNIX); jt -> idx_allow, jf -> idx_eperm
+    // prog[6 .. 6 + N - 1] = check each syscall in web_process_syscalls; jt -> idx_allow, jf -> 0
+    // prog[6 + N] = ret(deny_action) [idx_deny]
+    // prog[7 + N] = ret(SECCOMP_RET_ERRNO | 1) [idx_eperm]
+    // prog[8 + N] = ret(SECCOMP_RET_ALLOW) [idx_allow]
 
-    const idx_deny: usize = 7 + N;
-    const idx_eperm: usize = 8 + N;
-    const idx_allow: usize = 9 + N;
+    const idx_deny: usize = 6 + N;
+    const idx_eperm: usize = 7 + N;
+    const idx_allow: usize = 8 + N;
 
     prog[0] = load(4);
     prog[1] = check(native_arch, 0, @as(u8, @intCast(idx_deny - 2)));
     prog[2] = load(0);
-    prog[3] = check(SYS_CONNECT, @as(u8, @intCast(idx_eperm - 4)), 0);
-    prog[4] = check(SYS_SOCKET, 0, 2);
-    prog[5] = load(16);
-    prog[6] = check(1, @as(u8, @intCast(idx_allow - 7)), @as(u8, @intCast(idx_eperm - 7)));
+    prog[3] = check(SYS_SOCKET, 0, 2);
+    prog[4] = load(16);
+    prog[5] = check(1, @as(u8, @intCast(idx_allow - 6)), @as(u8, @intCast(idx_eperm - 6)));
 
     for (syscalls, 0..) |nr, i| {
-        prog[7 + i] = check(nr, @as(u8, @intCast(idx_allow - (8 + i))), 0);
+        prog[6 + i] = check(nr, @as(u8, @intCast(idx_allow - (7 + i))), 0);
     }
 
     prog[idx_deny] = ret(deny_action);
@@ -340,11 +344,13 @@ const web_process_syscalls = [_]u32{
     SYS_PREADV, SYS_PWRITEV, SYS_DUP, SYS_DUP2, SYS_DUP3,
     SYS_FSYNC, SYS_FDATASYNC, SYS_STATX, SYS_FALLOCATE, SYS_FTRUNCATE,
     SYS_STAT, SYS_LSTAT, SYS_STATFS, SYS_FSTATFS,
-    SYS_UNLINK, SYS_UNLINKAT, SYS_RENAME, SYS_RENAMEAT, SYS_RENAMEAT2,
+    SYS_UNLINK, SYS_UNLINKAT, SYS_RMDIR, SYS_RENAME, SYS_RENAMEAT, SYS_RENAMEAT2,
     SYS_MKDIR, SYS_MKDIRAT,
     SYS_CHMOD, SYS_FCHMOD, SYS_FCHMODAT,
+    SYS_UTIMENSAT,
     SYS_FLOCK,
     SYS_FACCESSAT, SYS_FACCESSAT2,
+    SYS_CLOSE_RANGE,
 
     // IPC / event loop
     SYS_EPOLL_CREATE1, SYS_EPOLL_CTL, SYS_EPOLL_WAIT,
@@ -353,16 +359,16 @@ const web_process_syscalls = [_]u32{
     SYS_INOTIFY_INIT1, SYS_INOTIFY_ADD_WATCH, SYS_INOTIFY_RM_WATCH,
     SYS_TIMERFD_CREATE, SYS_TIMERFD_SETTIME, SYS_TIMERFD_GETTIME, SYS_SIGNALFD4,
 
-    // Safe descriptor queries on open Unix domain sockets
-    SYS_GETPEERNAME, SYS_GETSOCKNAME, SYS_GETSOCKOPT, SYS_SETSOCKOPT,
-    SYS_SHUTDOWN, SYS_SENDMSG, SYS_RECVMSG,
+    // Safe descriptor queries, connect(), & send()/recv() on open Unix domain sockets
+    SYS_CONNECT, SYS_GETPEERNAME, SYS_GETSOCKNAME, SYS_GETSOCKOPT, SYS_SETSOCKOPT,
+    SYS_SHUTDOWN, SYS_SENDTO, SYS_RECVFROM, SYS_SENDMSG, SYS_RECVMSG,
 
     // Thread management
     SYS_CLONE, SYS_CLONE3, SYS_SET_TID_ADDRESS, SYS_SET_ROBUST_LIST, SYS_GET_ROBUST_LIST,
     SYS_FUTEX, SYS_GETTID, SYS_TGKILL, SYS_TKILL,
 
     // Signals
-    SYS_RT_SIGRETURN, SYS_RT_SIGACTION, SYS_RT_SIGPROCMASK,
+    SYS_RT_SIGRETURN, SYS_RT_SIGACTION, SYS_RT_SIGPROCMASK, SYS_RT_SIGSUSPEND,
     SYS_SIGALTSTACK,
 
     // Time
@@ -370,7 +376,7 @@ const web_process_syscalls = [_]u32{
 
     // Process
     SYS_GETPID, SYS_GETPPID, SYS_GETUID, SYS_GETGID,
-    SYS_GETEUID, SYS_GETEGID, SYS_EXIT_GROUP, SYS_EXIT,
+    SYS_GETEUID, SYS_GETEGID, SYS_GETRESUID, SYS_GETRESGID, SYS_EXIT_GROUP, SYS_EXIT,
     SYS_PRCTL, SYS_ARCH_PRCTL,
 
     // Misc
@@ -379,7 +385,7 @@ const web_process_syscalls = [_]u32{
     SYS_SETPRIORITY, SYS_GETPRIORITY,
     SYS_SYSINFO, SYS_UNAME, SYS_RSEQ, SYS_RESTART_SYSCALL,
     SYS_ACCESS, SYS_UMASK,
-    SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE,
+    SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE, SYS_PRLIMIT64,
 
     // MPK (JIT support — conditional on jit_enabled)
     SYS_PKEY_ALLOC, SYS_PKEY_FREE, SYS_PKEY_MPROTECT,
@@ -405,11 +411,13 @@ const network_process_filter = buildFilter(&[_]u32{
     SYS_PREADV, SYS_PWRITEV, SYS_DUP, SYS_DUP2, SYS_DUP3,
     SYS_FSYNC, SYS_FDATASYNC, SYS_STATX, SYS_FALLOCATE, SYS_FTRUNCATE,
     SYS_STAT, SYS_LSTAT, SYS_STATFS, SYS_FSTATFS,
-    SYS_UNLINK, SYS_UNLINKAT, SYS_RENAME, SYS_RENAMEAT, SYS_RENAMEAT2,
+    SYS_UNLINK, SYS_UNLINKAT, SYS_RMDIR, SYS_RENAME, SYS_RENAMEAT, SYS_RENAMEAT2,
     SYS_MKDIR, SYS_MKDIRAT,
     SYS_CHMOD, SYS_FCHMOD, SYS_FCHMODAT,
+    SYS_UTIMENSAT,
     SYS_FLOCK,
     SYS_FACCESSAT, SYS_FACCESSAT2,
+    SYS_CLOSE_RANGE,
 
     // IPC / event loop
     SYS_EPOLL_CREATE1, SYS_EPOLL_CTL, SYS_EPOLL_WAIT,
@@ -427,7 +435,7 @@ const network_process_filter = buildFilter(&[_]u32{
     SYS_FUTEX, SYS_GETTID, SYS_TGKILL, SYS_TKILL,
 
     // Signals
-    SYS_RT_SIGRETURN, SYS_RT_SIGACTION, SYS_RT_SIGPROCMASK,
+    SYS_RT_SIGRETURN, SYS_RT_SIGACTION, SYS_RT_SIGPROCMASK, SYS_RT_SIGSUSPEND,
     SYS_SIGALTSTACK,
 
     // Time
@@ -435,7 +443,7 @@ const network_process_filter = buildFilter(&[_]u32{
 
     // Process
     SYS_GETPID, SYS_GETPPID, SYS_GETUID, SYS_GETGID,
-    SYS_GETEUID, SYS_GETEGID, SYS_EXIT_GROUP, SYS_EXIT,
+    SYS_GETEUID, SYS_GETEGID, SYS_GETRESUID, SYS_GETRESGID, SYS_EXIT_GROUP, SYS_EXIT,
     SYS_PRCTL, SYS_ARCH_PRCTL,
 
     // Misc
@@ -444,7 +452,7 @@ const network_process_filter = buildFilter(&[_]u32{
     SYS_SETPRIORITY, SYS_GETPRIORITY,
     SYS_SYSINFO, SYS_UNAME, SYS_RSEQ, SYS_RESTART_SYSCALL,
     SYS_ACCESS, SYS_UMASK,
-    SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE,
+    SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE, SYS_PRLIMIT64,
 
     // MPK
     SYS_PKEY_ALLOC, SYS_PKEY_FREE, SYS_PKEY_MPROTECT,
@@ -489,7 +497,7 @@ const gpu_process_filter = buildFilter(&[_]u32{
     // Process
     SYS_GETPID, SYS_EXIT_GROUP,
     SYS_PRCTL, SYS_ARCH_PRCTL,
-    SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE,
+    SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE, SYS_PRLIMIT64,
 
     // Misc
     SYS_GETRANDOM,
@@ -525,11 +533,13 @@ const network_process_debug_filter = buildFilterWithAction(&[_]u32{
     SYS_PREADV, SYS_PWRITEV, SYS_DUP, SYS_DUP2, SYS_DUP3,
     SYS_FSYNC, SYS_FDATASYNC, SYS_STATX, SYS_FALLOCATE, SYS_FTRUNCATE,
     SYS_STAT, SYS_LSTAT, SYS_STATFS, SYS_FSTATFS,
-    SYS_UNLINK, SYS_UNLINKAT, SYS_RENAME, SYS_RENAMEAT, SYS_RENAMEAT2,
+    SYS_UNLINK, SYS_UNLINKAT, SYS_RMDIR, SYS_RENAME, SYS_RENAMEAT, SYS_RENAMEAT2,
     SYS_MKDIR, SYS_MKDIRAT,
     SYS_CHMOD, SYS_FCHMOD, SYS_FCHMODAT,
+    SYS_UTIMENSAT,
     SYS_FLOCK,
     SYS_FACCESSAT, SYS_FACCESSAT2,
+    SYS_CLOSE_RANGE,
     SYS_EPOLL_CREATE1, SYS_EPOLL_CTL, SYS_EPOLL_WAIT,
     SYS_PIPE, SYS_PIPE2, SYS_FCNTL, SYS_IOCTL, SYS_EVENTFD2,
     SYS_SOCKETPAIR, SYS_POLL, SYS_PPOLL,
@@ -541,18 +551,18 @@ const network_process_debug_filter = buildFilterWithAction(&[_]u32{
     SYS_SHUTDOWN, SYS_GETSOCKOPT, SYS_SETSOCKOPT,
     SYS_CLONE, SYS_CLONE3, SYS_SET_TID_ADDRESS, SYS_SET_ROBUST_LIST, SYS_GET_ROBUST_LIST,
     SYS_FUTEX, SYS_GETTID, SYS_TGKILL, SYS_TKILL,
-    SYS_RT_SIGRETURN, SYS_RT_SIGACTION, SYS_RT_SIGPROCMASK,
+    SYS_RT_SIGRETURN, SYS_RT_SIGACTION, SYS_RT_SIGPROCMASK, SYS_RT_SIGSUSPEND,
     SYS_SIGALTSTACK,
     SYS_CLOCK_GETTIME, SYS_GETTIMEOFDAY, SYS_CLOCK_NANOSLEEP,
     SYS_GETPID, SYS_GETPPID, SYS_GETUID, SYS_GETGID,
-    SYS_GETEUID, SYS_GETEGID, SYS_EXIT_GROUP, SYS_EXIT,
+    SYS_GETEUID, SYS_GETEGID, SYS_GETRESUID, SYS_GETRESGID, SYS_EXIT_GROUP, SYS_EXIT,
     SYS_PRCTL, SYS_ARCH_PRCTL,
     SYS_GETRANDOM, SYS_SCHED_YIELD, SYS_SCHED_SETATTR, SYS_SCHED_GETATTR, SYS_SCHED_SETAFFINITY, SYS_SCHED_GETAFFINITY,
     SYS_SCHED_SETPARAM, SYS_SCHED_GETPARAM, SYS_SCHED_SETSCHEDULER, SYS_SCHED_GETSCHEDULER, SYS_SCHED_GET_PRIORITY_MAX, SYS_SCHED_GET_PRIORITY_MIN,
     SYS_SETPRIORITY, SYS_GETPRIORITY,
     SYS_SYSINFO, SYS_UNAME, SYS_RSEQ, SYS_RESTART_SYSCALL,
     SYS_ACCESS, SYS_UMASK,
-    SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE,
+    SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE, SYS_PRLIMIT64,
     SYS_PKEY_ALLOC, SYS_PKEY_FREE, SYS_PKEY_MPROTECT,
     SYS_LANDLOCK_CREATE_RULESET, SYS_LANDLOCK_ADD_RULE, SYS_LANDLOCK_RESTRICT_SELF,
     // === Networking (additional server/binding syscalls) ===
@@ -578,7 +588,7 @@ const gpu_process_debug_filter = buildFilterWithAction(&[_]u32{
     SYS_CLOCK_GETTIME,
     SYS_GETPID, SYS_EXIT_GROUP,
     SYS_PRCTL, SYS_ARCH_PRCTL,
-    SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE,
+    SYS_GETCWD, SYS_CHDIR, SYS_GETRUSAGE, SYS_PRLIMIT64,
     SYS_GETRANDOM,
     SYS_LANDLOCK_CREATE_RULESET, SYS_LANDLOCK_ADD_RULE, SYS_LANDLOCK_RESTRICT_SELF,
 }, SECCOMP_RET_LOG);
@@ -620,7 +630,17 @@ pub fn install(kind: FilterKind) !void {
         .filter = @ptrCast(filter.ptr),
     };
 
-    const res = std.os.linux.syscall4(.seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, @intFromPtr(&fprog), 0);
+    var res = std.os.linux.syscall4(
+        .seccomp,
+        SECCOMP_SET_MODE_FILTER,
+        SECCOMP_FILTER_FLAG_TSYNC | SECCOMP_FILTER_FLAG_LOG,
+        @intFromPtr(&fprog),
+        0,
+    );
+    if (std.os.linux.errno(res) == .INVAL) {
+        // Fallback on kernels without SECCOMP_FILTER_FLAG_LOG (< 4.14)
+        res = std.os.linux.syscall4(.seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, @intFromPtr(&fprog), 0);
+    }
     if (std.os.linux.errno(res) != .SUCCESS) return error.SeccompFailed;
 }
 
@@ -764,8 +784,8 @@ test "seccomp web filter — MUST NOT contain networking syscalls" {
     try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_LISTEN));
     try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_ACCEPT));
     try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_ACCEPT4));
-    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_SENDTO));
-    try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_RECVFROM));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_SENDTO));
+    try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_RECVFROM));
     try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_SENDMMSG));
     try std.testing.expect(!scanBpfForSyscall(&web_process_filter, SYS_RECVMMSG));
     // Safe descriptor queries on open Unix domain sockets ARE retained
@@ -776,7 +796,7 @@ test "seccomp web filter — MUST NOT contain networking syscalls" {
     try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_SHUTDOWN));
     try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_SENDMSG));
     try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_RECVMSG));
-    // Socket domain inspection & connect EPERM
+    // Socket domain inspection (AF_UNIX only) & connect() on AF_UNIX sockets
     try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_SOCKET));
     try std.testing.expect(scanBpfForSyscall(&web_process_filter, SYS_CONNECT));
 }

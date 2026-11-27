@@ -440,6 +440,9 @@ const web_landlock_rules = if (builtin.os.tag == .linux) &[_]@import("landlock.z
     .{ .path = "/etc/vulkan", .read = true },
     .{ .path = "/sys/dev/char", .read = true },
     .{ .path = "/sys/devices", .read = true },
+    // Audio (PipeWire / PulseAudio Unix domain sockets)
+    .{ .path = "/run/user/1000/pipewire-0", .read = true, .write = true },
+    .{ .path = "/run/user/1000/pulse", .read = true, .write = true },
     // Profile + caches
     .{ .path = "/home/intro/.zawra", .read = true, .write = true },
     .{ .path = "/tmp/zawra-profile", .read = true, .write = true },
